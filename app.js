@@ -35,7 +35,7 @@ const defaultProject = {
     stairwellWidth: 1800,
     numberOfSteps: 12,
     stairType: 'straight',
-    uTurnStyle: 'landing',
+    turnStyle: 'landing',
     landingDepth: 900,
     landingWidth: 900,
     winderSteps: 3,
@@ -365,7 +365,7 @@ function getBillOfMaterials(platforms, legPlan, cutList, hardware) {
   const plywoodArea = sum(cutList.filter((c) => c.part === 'Top plate'), (c) => c.width * c.length * c.qty);
   const sheetArea = STANDARD_PLYWOOD_SHEET_W * STANDARD_PLYWOOD_SHEET_L;
   const plywoodSheets = Math.ceil(plywoodArea / sheetArea);
-  items.push({ category: 'Sheet goods', name: 'Poplar plywood sheets', qty: Math.max(1, plywoodSheets), unit: 'sheets', notes: `Standard sheet: ${STANDARD_PLYWOOD_SHEET_W} x ${STANDARD_PLYWOOD_SHEET_L} mm` });
+  items.push({ category: 'Sheet goods', name: 'Poplar plywood sheets', qty: plywoodSheets, unit: 'sheets', notes: `Standard sheet: ${STANDARD_PLYWOOD_SHEET_W} x ${STANDARD_PLYWOOD_SHEET_L} mm` });
 
   const timberByMaterial = new Map();
   cutList.filter((c) => c.material.includes('timber')).forEach((c) => {
@@ -532,49 +532,69 @@ function StairTopViewDiagram({ stair, platforms, showPlatforms }) {
   }
 
   if (stair.stairType === 'l-shaped') {
-    const stepsA = Math.ceil(stair.numberOfSteps / 2);
-    const stepsB = stair.numberOfSteps - stepsA;
+    const winderSteps = stair.turnStyle === 'winder' ? clamp(stair.winderSteps, 3, 6) : 0;
+    const straightSteps = Math.max(0, stair.numberOfSteps - winderSteps);
+    const stepsA = Math.ceil(straightSteps / 2);
+    const stepsB = Math.max(0, straightSteps - stepsA);
     const runA = stepsA * stair.treadDepth;
     const runB = stepsB * stair.treadDepth;
-    const landingDepth = Math.max(stair.landingDepth, 0);
-    const landingWidth = Math.max(stair.landingWidth || stair.stairWidth, 0);
+    const landingDepth = stair.turnStyle === 'landing' ? Math.max(stair.landingDepth, 0) : 0;
+    const landingWidth = stair.turnStyle === 'landing' ? Math.max(stair.landingWidth || stair.stairWidth, 0) : stair.stairWidth;
     const scale = Math.min((w - pad * 2) / (runA + landingDepth), (h - pad * 2) / (runB + landingWidth));
     const widthPx = stair.stairWidth * scale;
     const x = pad, y = h - pad - (runB + landingWidth) * scale;
     const runAPx = runA * scale, runBPx = runB * scale, landingDepthPx = landingDepth * scale, landingWidthPx = landingWidth * scale;
+    const cx = x + runAPx;
+    const cy = y + runBPx + widthPx;
     return <svg viewBox={`0 0 ${w} ${h}`} className="diagram">
       <rect x={x} y={y + runBPx} width={runAPx} height={widthPx} fill="#eef2f7" stroke="#111" />
       {Array.from({ length: stepsA }).map((_, i) => <line key={`a-${i}`} x1={x + i * stair.treadDepth * scale} y1={y + runBPx} x2={x + i * stair.treadDepth * scale} y2={y + runBPx + widthPx} stroke="#94a3b8" />)}
-      <rect x={x + runAPx} y={y + runBPx} width={landingDepthPx} height={landingWidthPx} fill="#e2e8f0" stroke="#111" />
+      {stair.turnStyle === 'landing' ? (
+        <rect x={x + runAPx} y={y + runBPx} width={landingDepthPx} height={landingWidthPx} fill="#e2e8f0" stroke="#111" />
+      ) : (
+        <g>
+          {Array.from({ length: winderSteps }).map((_, i) => {
+            const a0 = i * (Math.PI / 2) / winderSteps;
+            const a1 = (i + 1) * (Math.PI / 2) / winderSteps;
+            const rIn = Math.max(8, (stair.winderInnerTread / (Math.PI / 2)) * winderSteps * scale);
+            const rOut = rIn + widthPx;
+            const p1 = `${cx + Math.cos(a0) * rIn},${cy - Math.sin(a0) * rIn}`;
+            const p2 = `${cx + Math.cos(a1) * rIn},${cy - Math.sin(a1) * rIn}`;
+            const p3 = `${cx + Math.cos(a1) * rOut},${cy - Math.sin(a1) * rOut}`;
+            const p4 = `${cx + Math.cos(a0) * rOut},${cy - Math.sin(a0) * rOut}`;
+            return <polygon key={`l-w-${i}`} points={`${p1} ${p2} ${p3} ${p4}`} fill={i % 2 ? '#e2e8f0' : '#eef2f7'} stroke="#111" />;
+          })}
+        </g>
+      )}
       <rect x={x + runAPx} y={y} width={widthPx} height={runBPx} fill="#eef2f7" stroke="#111" />
       {Array.from({ length: stepsB }).map((_, i) => <line key={`b-${i}`} x1={x + runAPx} y1={y + i * stair.treadDepth * scale} x2={x + runAPx + widthPx} y2={y + i * stair.treadDepth * scale} stroke="#94a3b8" />)}
       {drawModulesOnRun(x, y + runBPx, runAPx, widthPx, true)}
-      <text x={w / 2} y={h - 8} textAnchor="middle" className="svgSmall">Top view with turn landing ({stair.stairType})</text>
+      <text x={w / 2} y={h - 8} textAnchor="middle" className="svgSmall">Top view (L-shape · {stair.turnStyle === 'winder' ? 'winder turn' : 'square landing turn'})</text>
     </svg>;
   }
 
-  const winderSteps = stair.uTurnStyle === 'winder' ? clamp(stair.winderSteps, 3, 6) : 0;
+  const winderSteps = stair.turnStyle === 'winder' ? clamp(stair.winderSteps, 3, 6) : 0;
   const rawStepsRun = Math.floor((stair.numberOfSteps - winderSteps) / 2);
   const stepsRun = Math.max(0, rawStepsRun);
   const run = stepsRun * stair.treadDepth;
-  const landingDepth = Math.max(stair.landingDepth, 0);
+  const landingDepth = stair.turnStyle === 'landing' ? Math.max(stair.landingDepth, 0) : 0;
   const landingWidth = Math.max(stair.landingWidth || stair.stairWidth, stair.stairWidth);
   const shapeW = run + landingDepth + stair.stairWidth;
-  const shapeH = run + landingWidth + stair.stairWidth;
+  const shapeH = run + stair.stairWidth;
   const scale = Math.min((w - pad * 2) / shapeW, (h - pad * 2) / shapeH);
   const widthPx = stair.stairWidth * scale;
   const runPx = run * scale;
+  const landingDepthPx = landingDepth * scale;
   const cx = pad + runPx + widthPx / 2;
-  const cy = pad + runPx + widthPx / 2;
-
+  const cy = pad + widthPx / 2;
   const startX = pad;
-  const startY = h - pad - widthPx;
+  const startY = cy - widthPx / 2;
 
   return <svg viewBox={`0 0 ${w} ${h}`} className="diagram">
     <rect x={startX} y={startY} width={runPx} height={widthPx} fill="#eef2f7" stroke="#111" />
     {Array.from({ length: stepsRun }).map((_, i) => <line key={`u-a-${i}`} x1={startX + i * stair.treadDepth * scale} y1={startY} x2={startX + i * stair.treadDepth * scale} y2={startY + widthPx} stroke="#94a3b8" />)}
-    {stair.uTurnStyle === 'landing' ? (
-      <rect x={startX + runPx} y={startY - landingWidth * scale + widthPx} width={landingDepth * scale} height={landingWidth * scale} fill="#e2e8f0" stroke="#111" />
+    {stair.turnStyle === 'landing' ? (
+      <rect x={startX + runPx} y={startY} width={landingDepthPx} height={landingWidth * scale} fill="#e2e8f0" stroke="#111" />
     ) : (
       <g>
         {Array.from({ length: winderSteps }).map((_, i) => {
@@ -590,10 +610,10 @@ function StairTopViewDiagram({ stair, platforms, showPlatforms }) {
         })}
       </g>
     )}
-    <rect x={startX + runPx + landingDepth * scale} y={startY - runPx} width={widthPx} height={runPx} fill="#eef2f7" stroke="#111" />
-    {Array.from({ length: stepsRun }).map((_, i) => <line key={`u-b-${i}`} x1={startX + runPx + landingDepth * scale} y1={startY - i * stair.treadDepth * scale} x2={startX + runPx + landingDepth * scale + widthPx} y2={startY - i * stair.treadDepth * scale} stroke="#94a3b8" />)}
+    <rect x={startX + runPx + landingDepthPx} y={startY} width={widthPx} height={runPx} fill="#eef2f7" stroke="#111" />
+    {Array.from({ length: stepsRun }).map((_, i) => <line key={`u-b-${i}`} x1={startX + runPx + landingDepthPx} y1={startY + i * stair.treadDepth * scale} x2={startX + runPx + landingDepthPx + widthPx} y2={startY + i * stair.treadDepth * scale} stroke="#94a3b8" />)}
     {drawModulesOnRun(startX, startY, runPx, widthPx, true)}
-    <text x={w / 2} y={h - 8} textAnchor="middle" className="svgSmall">Top view ({stair.uTurnStyle === 'winder' ? 'winder turn' : 'square landing turn'})</text>
+    <text x={w / 2} y={h - 8} textAnchor="middle" className="svgSmall">Top view (U-shape · {stair.turnStyle === 'winder' ? 'winder turn' : 'square landing turn'})</text>
   </svg>;
 }
 
@@ -682,18 +702,18 @@ function App() {
               <NumberInput label="Stairwell width" value={project.staircase.stairwellWidth} onChange={(v) => updateStair('stairwellWidth', v)} suffix="mm" min={500} />
               <NumberInput label="Number of steps" value={project.staircase.numberOfSteps} onChange={(v) => updateStair('numberOfSteps', v)} min={1} />
               <SelectInput label="Stair type" value={project.staircase.stairType} onChange={(v) => updateStair('stairType', v)} options={[{ value: 'straight', label: 'Straight' }, { value: 'u-shaped', label: 'U-shaped' }, { value: 'l-shaped', label: 'L-shaped' }]} />
-              {project.staircase.stairType === 'u-shaped' && <SelectInput label="U-turn type" value={project.staircase.uTurnStyle} onChange={(v) => updateStair('uTurnStyle', v)} options={[{ value: 'landing', label: 'Square landing' }, { value: 'winder', label: 'Winder (angled steps)' }]} />}
-              {project.staircase.stairType === 'u-shaped' && project.staircase.uTurnStyle === 'winder' && <NumberInput label="Winder steps in turn" value={project.staircase.winderSteps} onChange={(v) => updateStair('winderSteps', v)} min={3} max={6} />}
-              {project.staircase.stairType === 'u-shaped' && project.staircase.uTurnStyle === 'winder' && <NumberInput label="Inner winder tread (walk-line proxy)" value={project.staircase.winderInnerTread} onChange={(v) => updateStair('winderInnerTread', v)} suffix="mm" min={60} max={260} />}
-              <NumberInput label="Landing depth" value={project.staircase.landingDepth} onChange={(v) => updateStair('landingDepth', v)} suffix="mm" min={0} />
-              <NumberInput label="Landing width" value={project.staircase.landingWidth} onChange={(v) => updateStair('landingWidth', v)} suffix="mm" min={0} />
+              {project.staircase.stairType !== 'straight' && <SelectInput label="Turn transition" value={project.staircase.turnStyle} onChange={(v) => updateStair('turnStyle', v)} options={[{ value: 'landing', label: 'With landing' }, { value: 'winder', label: 'No landing (angled steps)' }]} />}
+              {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'winder' && <NumberInput label="Winder steps in turn" value={project.staircase.winderSteps} onChange={(v) => updateStair('winderSteps', v)} min={3} max={6} />}
+              {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'winder' && <NumberInput label="Inner winder tread (walk-line proxy)" value={project.staircase.winderInnerTread} onChange={(v) => updateStair('winderInnerTread', v)} suffix="mm" min={60} max={260} />}
+              {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'landing' && <NumberInput label="Landing depth" value={project.staircase.landingDepth} onChange={(v) => updateStair('landingDepth', v)} suffix="mm" min={0} />}
+              {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'landing' && <NumberInput label="Landing width" value={project.staircase.landingWidth} onChange={(v) => updateStair('landingWidth', v)} suffix="mm" min={0} />}
               <SelectInput label="Handrail" value={project.staircase.handrailPosition} onChange={(v) => updateStair('handrailPosition', v)} options={[{ value: 'none', label: 'None' }, { value: 'left', label: 'Left' }, { value: 'right', label: 'Right' }, { value: 'both', label: 'Both' }]} />
               <NumberInput label="Wall-handrail clearance" value={project.staircase.wallToHandrailClearance} onChange={(v) => updateStair('wallToHandrailClearance', v)} suffix="mm" min={0} />
               <NumberInput label="Obstruction depth" value={project.staircase.obstructionDepth} onChange={(v) => updateStair('obstructionDepth', v)} suffix="mm" min={0} />
               <ToggleInput label="Stair narrows at point" checked={project.staircase.narrowsAtPoint} onChange={(v) => updateStair('narrowsAtPoint', v)} />
             </div>
             {project.staircase.narrowsAtPoint && <div className="grid2"><NumberInput label="Narrowest width" value={project.staircase.narrowestWidth} onChange={(v) => updateStair('narrowestWidth', v)} suffix="mm" min={300} /></div>}
-            {project.staircase.stairType === 'u-shaped' && project.staircase.uTurnStyle === 'winder' && (
+            {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'winder' && (
               <p className="hint">For winders, <b>step depth</b> is treated as the straight-run tread depth, while the turn uses angled steps sized by “inner winder tread”.</p>
             )}
           </section>
@@ -759,7 +779,7 @@ function App() {
             <div className="btnRow"><button className={activeTab==='preview'?'active':''} onClick={()=>setActiveTab('preview')}>Preview</button><button className={activeTab==='materials'?'active':''} onClick={()=>setActiveTab('materials')}>Materials</button><button className={activeTab==='report'?'active':''} onClick={()=>setActiveTab('report')}>Report</button></div>
             {activeTab==='preview' && <div>{computedPlatforms.map((p)=><div key={p.module.id} className="moduleCard"><h3>{p.module.name} · {p.module.width} x {p.module.length} mm · qty {p.module.quantity}</h3><div className="chips"><span>Pockets: {p.pocketCount}</span><span>Recommended legs in use: {p.recommendedLegsUsed}</span><span>Weight: {formatKg(p.estimatedTotalWeightKg)}</span></div><div className="diagramGrid"><TopViewDiagram platform={p} /><UndersideDiagram platform={p} /><SideViewDiagram stair={project.staircase} legPlan={legPlan} platform={p} /></div></div>)}<div className="moduleCard"><div className="toggle"><span>Show platforms in stair overview</span><input type="checkbox" checked={showPlatformsInStairView} onChange={(e)=>setShowPlatformsInStairView(e.target.checked)} /></div><StairTopViewDiagram stair={project.staircase} platforms={computedPlatforms} showPlatforms={showPlatformsInStairView} /><Stair3DPreview stair={project.staircase} /></div></div>}
             {activeTab==='materials' && <div><h3>Bill of Materials</h3><Table headers={['Category','Item','Qty','Unit','Notes']} rows={billOfMaterials.map((i)=>[i.category,i.name,i.qty,i.unit,i.notes||'—'])} /><h3>Cut list</h3><Table headers={['Part','Material','Width','Length','Qty','Platform']} rows={cutList.map((i)=>[i.part,i.material,formatMm(i.width),formatMm(i.length),i.qty,i.platform||'—'])} /></div>}
-            {activeTab==='report' && <div><h3>Printable summary</h3><p>Stair type: {project.staircase.stairType}{project.staircase.stairType === 'u-shaped' ? ` (${project.staircase.uTurnStyle})` : ''}, step height: {formatMm(project.staircase.stepHeight)}, straight-run step depth: {formatMm(project.staircase.treadDepth)}.</p><p>Effective stair width: {formatMm(recommendedSize.effectiveStairWidth)}; total legs: {totalLegCount}; total top area: {totalTopAreaM2.toFixed(2)} m².</p><p>Total leg timber: {formatMeters(sum(legPlan, (leg) => leg.length * leg.quantity))}. Tool is planning-only, not engineering certification.</p><Table headers={['Platform','Dimensions','Top','Frame','Pockets','Legs in use','Weight']} rows={computedPlatforms.map((p)=>[`${p.module.name} (${p.module.quantity}x)`,`${p.module.width} x ${p.module.length} mm`,`${p.module.topThickness} mm plywood`,`${p.module.frameWidth} x ${p.module.frameHeight}`,`${p.pocketRows} x ${p.pocketCols} (${p.pocketCount})`,p.recommendedLegsUsed,formatKg(p.estimatedTotalWeightKg)])} /></div>}
+            {activeTab==='report' && <div><h3>Printable summary</h3><p>Stair type: {project.staircase.stairType}{project.staircase.stairType !== 'straight' ? ` (${project.staircase.turnStyle})` : ''}, step height: {formatMm(project.staircase.stepHeight)}, straight-run step depth: {formatMm(project.staircase.treadDepth)}.</p><p>Effective stair width: {formatMm(recommendedSize.effectiveStairWidth)}; total legs: {totalLegCount}; total top area: {totalTopAreaM2.toFixed(2)} m².</p><p>Total leg timber: {formatMeters(sum(legPlan, (leg) => leg.length * leg.quantity))}. Tool is planning-only, not engineering certification.</p><Table headers={['Platform','Dimensions','Top','Frame','Pockets','Legs in use','Weight']} rows={computedPlatforms.map((p)=>[`${p.module.name} (${p.module.quantity}x)`,`${p.module.width} x ${p.module.length} mm`,`${p.module.topThickness} mm plywood`,`${p.module.frameWidth} x ${p.module.frameHeight}`,`${p.pocketRows} x ${p.pocketCols} (${p.pocketCount})`,p.recommendedLegsUsed,formatKg(p.estimatedTotalWeightKg * p.module.quantity)])} /></div>}
           </section>
         </aside>
       </div>
