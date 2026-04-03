@@ -1,7 +1,7 @@
 const { useMemo, useState } = React;
 
 /**
- * Stair Platform Configurator
+ * Modular Stair Work Platform Configurator
  * Practical planning tool only, not structural approval.
  */
 
@@ -9,6 +9,16 @@ const PLYWOOD_DENSITY_KG_M3 = 450;
 const TIMBER_DENSITY_KG_M3 = 430;
 const STANDARD_PLYWOOD_SHEET_W = 1220;
 const STANDARD_PLYWOOD_SHEET_L = 2440;
+
+const STAIR_TYPE_CARDS = [
+  { id: 'straight', label: 'Straight staircase', family: 'straight', hasLanding: false },
+  { id: 'l-shaped', label: 'L-shaped staircase', family: 'l', hasLanding: false },
+  { id: 'l-shaped-landing', label: 'L-shaped staircase with landing', family: 'l', hasLanding: true },
+  { id: 'u-shaped', label: 'U-shaped staircase', family: 'u', hasLanding: false },
+  { id: 'return-landing', label: 'Staircase with landing / return', family: 'u', hasLanding: true },
+  { id: 'spiral', label: 'Spiral staircase', family: 'spiral', hasLanding: false },
+  { id: 'custom', label: 'Custom / irregular staircase', family: 'custom', hasLanding: false },
+];
 
 const defaultRepeatedPlatform = {
   id: 'platform-1',
@@ -28,18 +38,16 @@ const defaultRepeatedPlatform = {
 };
 
 const defaultProject = {
+  designMode: 'stair-specific',
   staircase: {
+    selectedTypeCard: 'straight',
     stepHeight: 180,
     treadDepth: 260,
     stairWidth: 900,
     stairwellWidth: 1800,
     numberOfSteps: 12,
-    stairType: 'straight',
-    turnStyle: 'landing',
     landingDepth: 900,
     landingWidth: 900,
-    winderSteps: 3,
-    winderInnerTread: 120,
     handrailPosition: 'right',
     wallToHandrailClearance: 40,
     narrowsAtPoint: false,
@@ -53,6 +61,10 @@ const defaultProject = {
     modules: [
       { ...defaultRepeatedPlatform, id: 'mixed-1', name: 'Lower module', quantity: 1 },
       { ...defaultRepeatedPlatform, id: 'mixed-2', name: 'Upper module', quantity: 1, width: 550, length: 900 },
+    ],
+    placements: [
+      { id: 'place-1', moduleRef: 'platform-1', enabled: true, run: 'primary', along: 20, across: 50 },
+      { id: 'place-2', moduleRef: 'platform-1', enabled: true, run: 'secondary', along: 25, across: 50 },
     ],
   },
   legConfig: {
@@ -98,88 +110,20 @@ function getEffectivePlatforms(project) {
 }
 
 function getPocketInset(module) { return clamp(module.legWidth / 2 + 24, 44, 86); }
+function getCrossMemberCount(length) { if (length <= 750) return 1; if (length <= 1100) return 2; return 3; }
 
-function getCrossMemberCenterlines(length, frameInset, crossMemberCount) {
-  const innerLength = Math.max(40, length - frameInset * 2);
-  const step = innerLength / (crossMemberCount + 1);
-  return Array.from({ length: crossMemberCount }, (_, idx) => frameInset + step * (idx + 1));
+function getPocketLayout(module) {
+  const { rows, cols } = getPatternRowsCols(module);
+  const frameInset = getPocketInset(module);
+  const xStep = cols <= 1 ? 0 : (module.width - frameInset * 2) / (cols - 1);
+  const yStep = rows <= 1 ? 0 : (module.length - frameInset * 2) / (rows - 1);
+  const points = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) points.push({ x: frameInset + c * xStep, y: frameInset + r * yStep, row: r, col: c });
+  return { rows, cols, points, crossMemberCount: getCrossMemberCount(module.length) };
 }
 
-function getClearYIntervals(length, frameInset, crossCenters, blockedHalfBand) {
-  const blocks = crossCenters
-    .map((center) => ({
-      start: Math.max(frameInset, center - blockedHalfBand),
-      end: Math.min(length - frameInset, center + blockedHalfBand),
-    }))
-    .sort((a, b) => a.start - b.start);
-
-  const intervals = [];
-  let cursor = frameInset;
-  blocks.forEach((block) => {
-    if (block.start > cursor + 20) intervals.push({ start: cursor, end: block.start });
-    cursor = Math.max(cursor, block.end);
-  });
-  if (cursor < length - frameInset - 20) intervals.push({ start: cursor, end: length - frameInset });
-  return intervals.length ? intervals : [{ start: frameInset, end: length - frameInset }];
-}
-
-function getEvenlySpacedPositions(start, end, count) {
-  if (count <= 1) return [(start + end) / 2];
-  const step = (end - start) / (count - 1);
-  return Array.from({ length: count }, (_, idx) => start + idx * step);
-}
-
-function getNudgedPositionIntoIntervals(value, intervals) {
-  for (const interval of intervals) if (value >= interval.start && value <= interval.end) return value;
-  let closest = intervals[0]?.start || value;
-  let minDistance = Infinity;
-  intervals.forEach((interval) => {
-    const candidate = value < interval.start ? interval.start : interval.end;
-    const distance = Math.abs(candidate - value);
-    if (distance < minDistance) {
-      minDistance = distance;
-      closest = candidate;
-    }
-  });
-  return closest;
-}
-
-function distributePositionsAcrossIntervals(intervals, count) {
-  if (count <= 1) {
-    const totalStart = intervals[0]?.start || 0;
-    const totalEnd = intervals[intervals.length - 1]?.end || 0;
-    return [(totalStart + totalEnd) / 2];
-  }
-  const assignments = Array.from({ length: count }, (_, idx) => intervals.length === 1 ? 0 : Math.round((idx * (intervals.length - 1)) / (count - 1)));
-  const totals = intervals.map((_, idx) => assignments.filter((entry) => entry === idx).length);
-  const seen = intervals.map(() => 0);
-  return assignments.map((intervalIndex) => {
-    seen[intervalIndex] += 1;
-    const interval = intervals[intervalIndex];
-    const totalInInterval = totals[intervalIndex];
-    const ratio = totalInInterval <= 1 ? 0.5 : seen[intervalIndex] / (totalInInterval + 1);
-    return interval.start + (interval.end - interval.start) * ratio;
-  });
-}
-
-function getPocketSupport(point, platform) {
-  const support = {
-    left: point.col === 0,
-    right: point.col === platform.pocketCols - 1,
-    top: point.row === 0,
-    bottom: point.row === platform.pocketRows - 1,
-  };
-  const nearestCross = platform.crossMemberCenters.find((c) => Math.abs(c - point.y) < platform.module.frameWidth * 0.65);
-  if (nearestCross) {
-    if (point.y <= nearestCross) support.bottom = true;
-    else support.top = true;
-  }
-  return support;
-}
-
-function getPocketSupportSideCount(point, platform) {
-  const support = getPocketSupport(point, platform);
-  return Object.values(support).filter(Boolean).length;
+function getStairTypeMeta(stair) {
+  return STAIR_TYPE_CARDS.find((entry) => entry.id === stair.selectedTypeCard) || STAIR_TYPE_CARDS[0];
 }
 
 function getEffectiveStairWidth(stair) {
@@ -188,35 +132,17 @@ function getEffectiveStairWidth(stair) {
   return Math.max(350, baseWidth - handrailLoss - stair.obstructionDepth);
 }
 
-function getStairLayoutPreset(stair) {
-  if (stair.stairType === 'straight') return 'straight';
-  if (stair.stairType === 'l-shaped') return stair.turnStyle === 'landing' ? 'l-landing' : 'l-winder';
-  return stair.turnStyle === 'landing' ? 'u-landing' : 'u-winder';
-}
-
 function suggestPlatformSize(stair) {
   const effectiveStairWidth = getEffectiveStairWidth(stair);
+  const type = getStairTypeMeta(stair);
   const maxWidth = clamp(effectiveStairWidth - 60, 350, 900);
-
-  let suggestedLengthBase = 900;
-  if (stair.stairType === 'straight') suggestedLengthBase = Math.min(900, stair.treadDepth * 3 + 120);
-  if (stair.stairType === 'u-shaped') {
-    const landingLongSide = Math.max(stair.landingDepth || 900, stair.landingWidth || stair.stairWidth || 900);
-    suggestedLengthBase = Math.min(900, Math.max(650, landingLongSide));
-  }
-  if (stair.stairType === 'l-shaped') {
-    const landingDepth = stair.landingDepth || 900;
-    const landingWidth = stair.landingWidth || stair.stairWidth || 900;
-    const effectiveLanding = Math.min(landingDepth, landingWidth);
-    suggestedLengthBase = Math.min(900, Math.max(650, Math.min(effectiveLanding, stair.stairwellWidth / 1.8)));
-  }
-
-  const maximumLength = clamp(stair.stairType === 'straight' ? stair.treadDepth * 4 + 150 : Math.max(stair.landingDepth, 850), 650, 1300);
-  const recommendedWidthBase = Math.min(maxWidth, 600);
-  const recommendedWidth = maxWidth < 450 ? maxWidth : clamp(recommendedWidthBase, 450, maxWidth);
-
+  let suggestedLengthBase = type.family === 'straight' ? Math.min(900, stair.treadDepth * 3 + 120) : 850;
+  if (type.hasLanding) suggestedLengthBase = Math.min(900, Math.max(650, Math.min(stair.landingDepth, stair.landingWidth)));
+  if (type.family === 'spiral') suggestedLengthBase = 700;
+  if (type.family === 'custom') suggestedLengthBase = 780;
+  const maximumLength = clamp(type.family === 'straight' ? stair.treadDepth * 4 + 150 : Math.max(stair.landingDepth, 850), 650, 1300);
   return {
-    recommendedWidth: roundTo(recommendedWidth, 10),
+    recommendedWidth: roundTo(clamp(Math.min(maxWidth, 600), 450, maxWidth), 10),
     recommendedLength: roundTo(clamp(suggestedLengthBase, 650, maximumLength), 10),
     maximumWidth: roundTo(maxWidth, 10),
     maximumLength: roundTo(maximumLength, 10),
@@ -224,107 +150,41 @@ function suggestPlatformSize(stair) {
   };
 }
 
-function getCrossMemberCount(length) {
-  if (length <= 750) return 1;
-  if (length <= 1100) return 2;
-  return 3;
-}
-
-function getPocketLayout(module) {
-  const { rows, cols } = getPatternRowsCols(module);
-  const frameInset = getPocketInset(module);
-  const crossMemberCount = getCrossMemberCount(module.length);
-  const crossMemberCenters = getCrossMemberCenterlines(module.length, frameInset, crossMemberCount);
-  const blockedHalfBand = clamp(module.frameWidth / 2 + module.legWidth / 2 + 10, 30, 70);
-  const clearYIntervals = getClearYIntervals(module.length, frameInset, crossMemberCenters, blockedHalfBand);
-
-  const xPositions = getEvenlySpacedPositions(frameInset, module.width - frameInset, cols);
-  const yPositions = module.layoutStyle === 'fixed-grid'
-    ? getEvenlySpacedPositions(frameInset, module.length - frameInset, rows).map((y) => getNudgedPositionIntoIntervals(y, clearYIntervals))
-    : distributePositionsAcrossIntervals(clearYIntervals, rows);
-
-  const points = [];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) points.push({ x: xPositions[c], y: yPositions[r], row: r, col: c });
-  return { rows, cols, points, crossMemberCenters };
-}
-
-function getRecommendedLegsUsed(module, pocketCount) {
-  let recommended = 4;
-  if (module.length > 950) recommended = 5;
-  if (module.length > 1100 || module.width > 700) recommended = 6;
-  if (module.width > 800 && module.length > 1100) recommended = 7;
-  return clamp(recommended, 4, pocketCount);
-}
-
 function computePlatform(module, stair) {
   const suggestion = suggestPlatformSize(stair);
-  const { rows, cols, points, crossMemberCenters } = getPocketLayout(module);
-  const pocketCount = points.length;
-  const recommendedLegsUsed = getRecommendedLegsUsed(module, pocketCount);
-  const crossMemberCount = getCrossMemberCount(module.length);
-
+  const layout = getPocketLayout(module);
   const topVolume = module.width * module.length * module.topThickness;
-  const longRailsVolume = 2 * module.length * module.frameWidth * module.frameHeight;
-  const shortRailLength = Math.max(0, module.width - module.frameWidth * 2);
-  const shortRailsVolume = 2 * shortRailLength * module.frameWidth * module.frameHeight;
-  const crossVolume = crossMemberCount * Math.max(0, module.width - module.frameWidth * 2) * module.frameWidth * module.frameHeight;
-
-  const topWeightKg = mm3ToKg(topVolume, PLYWOOD_DENSITY_KG_M3);
-  const frameWeightKg = mm3ToKg(longRailsVolume + shortRailsVolume + crossVolume, TIMBER_DENSITY_KG_M3);
-  const estimatedTotalWeightKg = topWeightKg + frameWeightKg + recommendedLegsUsed * 0.3;
-
+  const crossLen = Math.max(0, module.width - module.frameWidth * 2);
+  const frameVolume = (2 * module.length + 2 * crossLen + layout.crossMemberCount * crossLen) * module.frameWidth * module.frameHeight;
+  const weight = mm3ToKg(topVolume, PLYWOOD_DENSITY_KG_M3) + mm3ToKg(frameVolume, TIMBER_DENSITY_KG_M3);
   const warnings = [];
   if (module.width > suggestion.maximumWidth) warnings.push('Platform width exceeds practical available stair width.');
   if (module.length > suggestion.maximumLength) warnings.push('Platform length appears large for this staircase geometry.');
-  if (module.width < 400) warnings.push('Very narrow platform width may be impractical.');
-  if (module.length < 600) warnings.push('Very short platform length may reduce usefulness.');
-
-  const minXSpacing = cols > 1 ? (module.width - getPocketInset(module) * 2) / (cols - 1) : 999;
-  const col0 = points.filter((pt) => pt.col === 0);
-  const rowYSteps = [];
-  for (let i = 1; i < col0.length; i++) rowYSteps.push(col0[i].y - col0[i - 1].y);
-  const minYSpacing = rowYSteps.length ? Math.min(...rowYSteps) : 999;
-
-  if (minXSpacing < module.legWidth + 18 || minYSpacing < module.legWidth + 18) {
-    warnings.push('Too many pocket positions for selected platform size.');
-  }
-
   return {
     module,
-    pocketRows: rows,
-    pocketCols: cols,
-    pocketCount,
-    recommendedLegsUsed,
-    pocketPoints: points,
-    crossMemberCount,
-    crossMemberCenters,
-    topWeightKg,
-    frameWeightKg,
-    estimatedTotalWeightKg,
+    pocketRows: layout.rows,
+    pocketCols: layout.cols,
+    pocketCount: layout.points.length,
+    recommendedLegsUsed: clamp(4 + Math.round(module.length / 400), 4, layout.points.length),
+    pocketPoints: layout.points,
+    crossMemberCount: layout.crossMemberCount,
+    crossMemberCenters: Array.from({ length: layout.crossMemberCount }, (_, i) => ((i + 1) * module.length) / (layout.crossMemberCount + 1)),
+    estimatedTotalWeightKg: weight,
     warnings,
   };
 }
 
 function getSuggestedLegHeights(project, platforms) {
-  const stair = project.staircase;
-  const rise = stair.stepHeight;
-  const maxPlatformLength = Math.max(...platforms.map((p) => p.module.length), 900);
-  const maxLevels = clamp(Math.floor(maxPlatformLength / Math.max(1, stair.treadDepth)) + 1, 2, 6);
-  const supportsPerLevel = Math.max(2, Math.min(3, Math.round(Math.max(...platforms.map((p) => p.module.width), 600) / 350)));
-
-  const heights = [];
-  for (let i = 0; i < maxLevels; i++) {
-    const legLength = project.legConfig.grouping === 'straight' ? project.legConfig.baseLegLength : project.legConfig.baseLegLength + i * rise;
-    heights.push({ label: i === 0 ? 'Base leg' : `Base + ${i} rise`, length: legLength, quantity: supportsPerLevel });
-  }
-
-  const multiplier = sum(platforms, (p) => p.module.quantity);
-  return heights.map((entry) => ({ ...entry, quantity: entry.quantity * multiplier }));
+  const rise = project.staircase.stepHeight;
+  const levels = clamp(Math.floor((Math.max(...platforms.map((p) => p.module.length), 900) / project.staircase.treadDepth)) + 1, 2, 6);
+  const multiplier = Math.max(1, sum(platforms, (p) => p.module.quantity));
+  return Array.from({ length: levels }, (_, i) => ({ label: i === 0 ? 'Base leg' : `Base + ${i} rise`, length: project.legConfig.baseLegLength + i * rise, quantity: multiplier * 2 }));
 }
 
 function getActiveLegPlan(project, platforms) {
-  if (project.legConfig.mode === 'manual') return project.legConfig.manualLegs.map((l) => ({ label: l.label, length: l.length, quantity: l.quantity }));
-  return getSuggestedLegHeights(project, platforms);
+  return project.legConfig.mode === 'manual'
+    ? project.legConfig.manualLegs.map((l) => ({ label: l.label, length: l.length, quantity: l.quantity }))
+    : getSuggestedLegHeights(project, platforms);
 }
 
 function getCutList(platforms, legPlan, hardware) {
@@ -332,515 +192,237 @@ function getCutList(platforms, legPlan, hardware) {
   platforms.forEach((platform) => {
     const m = platform.module;
     const shortRailLength = Math.max(0, m.width - m.frameWidth * 2);
-    const crossLength = Math.max(0, m.width - m.frameWidth * 2);
-    const totalPocketBlocks = sum(platform.pocketPoints, (point) => Math.max(0, 4 - getPocketSupportSideCount(point, platform)));
-
     cuts.push({ part: 'Top plate', material: `${m.topThickness} mm plywood`, width: m.width, length: m.length, qty: m.quantity, platform: m.name });
     cuts.push({ part: 'Outer frame long rail', material: `${m.frameWidth} x ${m.frameHeight} timber`, width: m.frameWidth, length: m.length, qty: 2 * m.quantity, platform: m.name });
     cuts.push({ part: 'Outer frame short rail', material: `${m.frameWidth} x ${m.frameHeight} timber`, width: m.frameWidth, length: shortRailLength, qty: 2 * m.quantity, platform: m.name });
-    cuts.push({ part: 'Cross-member / main beam', material: `${m.frameWidth} x ${m.frameHeight} timber`, width: m.frameWidth, length: crossLength, qty: platform.crossMemberCount * m.quantity, platform: m.name });
-    cuts.push({ part: 'Pocket guide block, 45° relief', material: `${m.frameWidth} x ${m.frameHeight} timber`, width: m.frameWidth, length: 120, qty: totalPocketBlocks * m.quantity, platform: m.name });
+    cuts.push({ part: 'Cross-member', material: `${m.frameWidth} x ${m.frameHeight} timber`, width: m.frameWidth, length: shortRailLength, qty: platform.crossMemberCount * m.quantity, platform: m.name });
   });
-
-  const totalModuleQty = Math.max(1, sum(platforms, (p) => p.module.quantity));
-  const legProfiles = platforms.length
-    ? platforms.map((p) => ({
-      material: `${p.module.legWidth} x ${p.module.legHeight} timber`,
-      width: p.module.legWidth,
-      qtyWeight: p.module.quantity / totalModuleQty,
-      platform: p.module.name,
-    }))
-    : [{ material: '48 x 73 timber', width: 48, qtyWeight: 1, platform: 'All platforms' }];
-
   legPlan.forEach((leg) => {
-    let remaining = leg.quantity;
-    legProfiles.forEach((profile, idx) => {
-      const qty = idx === legProfiles.length - 1 ? remaining : Math.round(leg.quantity * profile.qtyWeight);
-      remaining -= qty;
-      if (qty <= 0) return;
-      cuts.push({ part: 'Leg', material: profile.material, width: profile.width, length: leg.length, qty, platform: profile.platform });
-      if (hardware.includeOptionalBracing && leg.length >= 600) cuts.push({ part: 'Optional bracing piece', material: profile.material, width: profile.width, length: 280, qty: qty * 2, platform: profile.platform });
-    });
+    cuts.push({ part: 'Leg', material: '48 x 73 timber', width: 48, length: leg.length, qty: leg.quantity, platform: 'All modules' });
+    if (hardware.includeOptionalBracing && leg.length >= 600) cuts.push({ part: 'Optional bracing piece', material: '48 x 73 timber', width: 48, length: 280, qty: leg.quantity * 2, platform: 'All modules' });
   });
-
   return cuts;
 }
 
 function getBillOfMaterials(platforms, legPlan, cutList, hardware) {
   const items = [];
   const plywoodArea = sum(cutList.filter((c) => c.part === 'Top plate'), (c) => c.width * c.length * c.qty);
-  const sheetArea = STANDARD_PLYWOOD_SHEET_W * STANDARD_PLYWOOD_SHEET_L;
-  const plywoodSheets = Math.ceil(plywoodArea / sheetArea);
-  items.push({ category: 'Sheet goods', name: 'Poplar plywood sheets', qty: plywoodSheets, unit: 'sheets', notes: `Standard sheet: ${STANDARD_PLYWOOD_SHEET_W} x ${STANDARD_PLYWOOD_SHEET_L} mm` });
-
-  const timberByMaterial = new Map();
-  cutList.filter((c) => c.material.includes('timber')).forEach((c) => {
-    timberByMaterial.set(c.material, (timberByMaterial.get(c.material) || 0) + c.length * c.qty);
-  });
-
-  Array.from(timberByMaterial.entries()).forEach(([material, totalLength]) => {
-    items.push({ category: 'Timber', name: material, qty: Number((totalLength / 1000).toFixed(2)), unit: 'm', notes: 'Total raw length before stock optimization' });
-  });
-
+  items.push({ category: 'Sheet goods', name: 'Poplar plywood sheets', qty: Math.ceil(plywoodArea / (STANDARD_PLYWOOD_SHEET_W * STANDARD_PLYWOOD_SHEET_L)), unit: 'sheets' });
+  const timberLength = sum(cutList.filter((c) => c.material.includes('timber')), (c) => c.length * c.qty);
+  items.push({ category: 'Timber', name: 'Mixed framing timber', qty: Number((timberLength / 1000).toFixed(2)), unit: 'm' });
   const totalLegCount = sum(legPlan, (l) => l.quantity);
-  const totalRecommendedLegsUsed = sum(platforms, (p) => p.recommendedLegsUsed * p.module.quantity);
-  const boltCount = Math.max(totalLegCount, totalRecommendedLegsUsed);
-
-  items.push({ category: 'Hardware', name: 'M8 threaded inserts', qty: totalLegCount, unit: 'pcs' });
-  items.push({ category: 'Hardware', name: `M8 bolts (${hardware.boltLength} mm)`, qty: boltCount, unit: 'pcs' });
-  if (hardware.includeWashers) items.push({ category: 'Hardware', name: 'M8 washers', qty: boltCount, unit: 'pcs' });
-
-  const screwCount = Math.ceil(sum(platforms, (p) => {
-    const pocketGuideBlocks = sum(p.pocketPoints, (point) => Math.max(0, 4 - getPocketSupportSideCount(point, p)));
-    return (20 + p.crossMemberCount * 4 + pocketGuideBlocks * 2) * p.module.quantity;
-  }));
-
-  items.push({ category: 'Hardware', name: 'Wood screws', qty: screwCount, unit: 'pcs', notes: 'Rough estimate for frame, pocket blocks and top fastening' });
+  items.push({ category: 'Hardware', name: `M8 bolts (${hardware.boltLength} mm)`, qty: totalLegCount, unit: 'pcs' });
+  if (hardware.includeWashers) items.push({ category: 'Hardware', name: 'M8 washers', qty: totalLegCount, unit: 'pcs' });
+  if (hardware.includeAntiSlipPads) items.push({ category: 'Consumables', name: 'Anti-slip pads', qty: totalLegCount, unit: 'pcs' });
   if (hardware.includeGlue) items.push({ category: 'Consumables', name: 'Wood glue', qty: 1, unit: 'bottle' });
-  if (hardware.includeAntiSlipPads) items.push({ category: 'Consumables', name: 'Anti-slip pads / feet', qty: totalLegCount, unit: 'pcs' });
   return items;
 }
 
-function getGlobalWarnings(stair, platforms, legPlan) {
+function getGlobalWarnings(stair, platforms, designMode) {
   const warnings = [
     'This is a planning tool only. It does not provide structural approval.',
     'User must verify stability, bracing, fasteners and safe working conditions before use.',
-    'Do not use without proper assembly, anti-slip measures and practical load assessment.',
-    'Not a substitute for certified scaffolding or engineering approval.',
   ];
+  if (designMode === 'quick') warnings.push('Quick mode skips detailed staircase modeling. Validate platform fit manually.');
   if (stair.stepHeight <= 0 || stair.treadDepth <= 0 || stair.numberOfSteps <= 0) warnings.push('Stair geometry contains invalid values.');
-  if (stair.stairWidth < 550) warnings.push('Very narrow staircase detected. Layout options are limited.');
   platforms.forEach((p) => warnings.push(...p.warnings));
-  legPlan.forEach((leg) => {
-    if (leg.length < 80) warnings.push(`Leg length ${leg.length} mm is probably too short.`);
-    if (leg.length > 1200) warnings.push(`Leg length ${leg.length} mm is very tall and may require strong bracing.`);
-  });
   return Array.from(new Set(warnings));
 }
 
 function NumberInput({ label, value, onChange, min, max, step = 1, suffix }) {
   return <label className="field"><span>{label}</span><div className="inputWrap"><input type="number" value={Number.isFinite(value) ? value : ''} min={min} max={max} step={step} onChange={(e) => onChange(Number(e.target.value))} />{suffix ? <em>{suffix}</em> : null}</div></label>;
 }
+function SelectInput({ label, value, onChange, options }) { return <label className="field"><span>{label}</span><select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></label>; }
+function ToggleInput({ label, checked, onChange }) { return <label className="toggle"><span>{label}</span><input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} /></label>; }
+function WarningList({ warnings }) { return <div className="warning"><h3>Warnings & safety notes</h3><ul>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></div>; }
+function Table({ headers, rows }) { return <div className="tableWrap"><table><thead><tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{rows.map((row, idx) => <tr key={idx}>{row.map((cell, c) => <td key={c}>{cell}</td>)}</tr>)}</tbody></table></div>; }
 
-function SelectInput({ label, value, onChange, options }) {
-  return <label className="field"><span>{label}</span><select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></label>;
+function StairTypeIcon({ id }) {
+  if (id === 'straight') return <svg viewBox="0 0 100 60"><rect x="10" y="20" width="80" height="20" fill="#e2e8f0" stroke="#0f172a"/></svg>;
+  if (id === 'l-shaped' || id === 'l-shaped-landing') return <svg viewBox="0 0 100 60"><path d="M10 35h55v15h15V10H65v25H10z" fill="#e2e8f0" stroke="#0f172a"/></svg>;
+  if (id === 'u-shaped' || id === 'return-landing') return <svg viewBox="0 0 100 60"><path d="M10 45h25V15h30v30h25V10H50v30H10z" fill="#e2e8f0" stroke="#0f172a"/></svg>;
+  if (id === 'spiral') return <svg viewBox="0 0 100 60"><path d="M70 30a20 20 0 1 1-20-20" fill="none" stroke="#0f172a" strokeWidth="5"/><circle cx="50" cy="30" r="5" fill="#334155"/></svg>;
+  return <svg viewBox="0 0 100 60"><path d="M10 45l25-25 20 10 20-15 15 30z" fill="#e2e8f0" stroke="#0f172a"/></svg>;
 }
 
-function ToggleInput({ label, checked, onChange }) {
-  return <label className="toggle"><span>{label}</span><input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} /></label>;
+function StairTypeSelector({ selected, onSelect }) {
+  return <div className="stairTypeGrid">{STAIR_TYPE_CARDS.map((type) => <button key={type.id} className={`stairTypeCard ${selected === type.id ? 'activeCard' : ''}`} onClick={() => onSelect(type.id)}><StairTypeIcon id={type.id} /><b>{type.label}</b></button>)}</div>;
 }
 
-function WarningList({ warnings }) {
-  return <div className="warning"><h3>Warnings & safety notes</h3><ul>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></div>;
-}
+function StairOverviewLayout({ stair, placements, modulesById }) {
+  const w = 560, h = 300, pad = 18;
+  const type = getStairTypeMeta(stair);
+  const run = stair.numberOfSteps * stair.treadDepth;
+  const stairW = stair.stairWidth;
+  const scale = Math.min((w - pad * 2) / Math.max(run, stair.stairwellWidth), (h - pad * 2) / Math.max(stairW * 1.8, stair.stairwellWidth * 0.8));
 
-function Table({ headers, rows }) {
-  return <div className="tableWrap"><table><thead><tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{rows.map((row, idx) => <tr key={idx}>{row.map((cell, c) => <td key={c}>{cell}</td>)}</tr>)}</tbody></table></div>;
-}
-
-function TopViewDiagram({ platform }) {
-  const w = 360, h = 220, pad = 24;
-  const scale = Math.min((w - pad * 2) / platform.module.width, (h - pad * 2) / platform.module.length);
-  const rw = platform.module.width * scale, rh = platform.module.length * scale;
-  const x = (w - rw) / 2, y = (h - rh) / 2;
-  return <svg viewBox={`0 0 ${w} ${h}`} className="diagram"><rect x={x} y={y} width={rw} height={rh} fill="#ddd" stroke="#111" strokeWidth="2" /><text x={w/2} y={h-8} textAnchor="middle" className="svgSmall">Top view {platform.module.width}x{platform.module.length} mm</text></svg>;
-}
-
-function UndersideDiagram({ platform }) {
-  const w = 360, h = 240, pad = 28;
-  const scale = Math.min((w - pad * 2) / platform.module.width, (h - pad * 2) / platform.module.length);
-  const rw = platform.module.width * scale, rh = platform.module.length * scale;
-  const x = (w - rw) / 2, y = (h - rh) / 2;
-  const frameThickness = Math.max(8, platform.module.frameWidth * scale * 0.7);
-  const pocketSide = Math.max(12, platform.module.legWidth * scale * 0.7);
-  const guideDepth = Math.max(8, pocketSide * 0.55);
-
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="diagram">
-      <rect x={x} y={y} width={rw} height={rh} fill="#fafafa" stroke="#111" strokeWidth="2" />
-      <rect x={x} y={y} width={rw} height={frameThickness} fill="#64748b" />
-      <rect x={x} y={y + rh - frameThickness} width={rw} height={frameThickness} fill="#64748b" />
-      <rect x={x} y={y} width={frameThickness} height={rh} fill="#64748b" />
-      <rect x={x + rw - frameThickness} y={y} width={frameThickness} height={rh} fill="#64748b" />
-      {platform.crossMemberCenters.map((center, idx) => <rect key={idx} x={x + frameThickness} y={y + center * scale - frameThickness/2} width={rw-frameThickness*2} height={frameThickness*0.9} fill="#94a3b8" />)}
-      {platform.pocketPoints.map((pt, idx) => {
-        const px = x + pt.x * scale, py = y + pt.y * scale;
-        const left = px - pocketSide / 2, right = px + pocketSide / 2, top = py - pocketSide / 2, bottom = py + pocketSide / 2;
-        const support = getPocketSupport(pt, platform);
-        return <g key={idx}>
-          {!support.top && <polygon points={`${left+2},${top-guideDepth} ${right-2},${top-guideDepth} ${right-8},${top-2} ${left+8},${top-2}`} fill="#d97706"/>}
-          {!support.bottom && <polygon points={`${left+8},${bottom+2} ${right-8},${bottom+2} ${right-2},${bottom+guideDepth} ${left+2},${bottom+guideDepth}`} fill="#d97706"/>}
-          {!support.left && <polygon points={`${left-guideDepth},${top+2} ${left-2},${top+8} ${left-2},${bottom-8} ${left-guideDepth},${bottom-2}`} fill="#d97706"/>}
-          {!support.right && <polygon points={`${right+2},${top+8} ${right+guideDepth},${top+2} ${right+guideDepth},${bottom-2} ${right+2},${bottom-8}`} fill="#d97706"/>}
-          <rect x={left} y={top} width={pocketSide} height={pocketSide} fill="#111" opacity="0.8" />
-        </g>;
-      })}
-      <text x={w/2} y={h-8} textAnchor="middle" className="svgSmall">Underside with frame-integrated pockets + relief blocks</text>
-    </svg>
-  );
-}
-
-function SideViewDiagram({ stair, legPlan, platform }) {
-  const w = 420, h = 260, leftPad = 30, bottomPad = 28, topPad = 18;
-  const usableW = w - leftPad - 20, usableH = h - topPad - bottomPad;
-  const visibleSteps = clamp(Math.ceil(platform.module.length / stair.treadDepth) + 1, 3, 7);
-  const totalRun = visibleSteps * stair.treadDepth, totalRise = visibleSteps * stair.stepHeight;
-  const scale = Math.min(usableW / totalRun, usableH / Math.max(totalRise, 500));
-
-  const stairPath = [];
-  let currentX = leftPad, currentY = h - bottomPad;
-  stairPath.push(`M ${currentX} ${currentY}`);
-  for (let i = 0; i < visibleSteps; i++) {
-    currentX += stair.treadDepth * scale; stairPath.push(`L ${currentX} ${currentY}`);
-    currentY -= stair.stepHeight * scale; stairPath.push(`L ${currentX} ${currentY}`);
-  }
-
-  const sortedLegs = [...legPlan].sort((a, b) => b.length - a.length).slice(0, Math.min(4, legPlan.length));
-  const firstStepY = h - bottomPad;
-  const platformBottomY = firstStepY - (sortedLegs[0]?.length || 120) * scale;
-  const platformX = leftPad + 25;
-  const platformW = platform.module.length * scale * 0.82;
-  const platformH = (platform.module.frameHeight + platform.module.topThickness) * scale;
-  const platformY = platformBottomY - platformH;
-  const legVisualWidth = Math.max(12, platform.module.legWidth * scale * 0.45);
-
-  return <svg viewBox={`0 0 ${w} ${h}`} className="diagram"><path d={stairPath.join(' ')} fill="none" stroke="#111" strokeWidth="3"/><rect x={platformX} y={platformY} width={platformW} height={platformH} fill="#ddd" stroke="#111"/>{sortedLegs.map((leg, idx)=>{const treadIndex=clamp(idx,0,visibleSteps-1); const treadY=h-bottomPad-treadIndex*stair.stepHeight*scale; const lx=platformX+36+idx*(platformW/Math.max(4,sortedLegs.length)); const ly=platformY+platformH; const vh=Math.max(0,treadY-ly); return <g key={idx}><rect x={lx} y={ly} width={legVisualWidth} height={vh} fill="#666"/><text x={lx+legVisualWidth/2} y={Math.min(h-8,treadY+14)} textAnchor="middle" className="svgTiny">{leg.length}</text></g>})}<text x={w/2} y={h-8} textAnchor="middle" className="svgSmall">Side view: long legs left → short right</text></svg>;
-}
-
-function StairTopViewDiagram({ stair, platforms, showPlatforms }) {
-  const w = 520, h = 280, pad = 20;
-  const modules = platforms.flatMap((p) => Array.from({ length: p.module.quantity }, (_, idx) => ({ id: `${p.module.id}-${idx}`, name: p.module.name, length: p.module.length, width: p.module.width })));
-
-  const drawModulesOnRun = (startX, startY, runLengthPx, runWidthPx, horizontal = true) => {
-    if (!showPlatforms) return null;
-    let cursor = 10;
-    return modules.map((m, idx) => {
-      const ml = Math.min(runLengthPx * 0.42, (m.length / (stair.numberOfSteps * stair.treadDepth || 1)) * runLengthPx * 1.2);
-      const mw = Math.min(runWidthPx - 10, (m.width / (stair.stairWidth || 1)) * runWidthPx);
-      const x = horizontal ? startX + cursor : startX + (runWidthPx - mw) / 2;
-      const y = horizontal ? startY + (runWidthPx - mw) / 2 : startY + cursor;
-      cursor += ml + 8;
-      return <rect key={m.id} x={x} y={y} width={horizontal ? ml : mw} height={horizontal ? mw : ml} fill={idx % 2 ? '#e5e7eb' : '#cbd5e1'} stroke="#111" />;
-    });
+  const drawPlacement = (p, lane) => {
+    if (!p.enabled) return null;
+    const mod = modulesById.get(p.moduleRef);
+    if (!mod) return null;
+    const ml = mod.length * scale * 0.35;
+    const mw = mod.width * scale * 0.35;
+    const x = lane.x + (lane.w - ml) * (p.along / 100);
+    const y = lane.y + (lane.h - mw) * (p.across / 100);
+    return <g key={p.id}><rect x={x} y={y} width={ml} height={mw} fill="#cbd5e1" stroke="#111"/><text x={x + 4} y={y + 12} className="svgTiny">{mod.name}</text></g>;
   };
 
-  if (stair.stairType === 'straight') {
-    const run = stair.numberOfSteps * stair.treadDepth;
-    const scale = Math.min((w - pad * 2) / run, (h - pad * 2) / stair.stairWidth);
-    const runPx = run * scale, widthPx = stair.stairWidth * scale;
-    const x = pad, y = (h - widthPx) / 2;
-    return <svg viewBox={`0 0 ${w} ${h}`} className="diagram">
-      <rect x={x} y={y} width={runPx} height={widthPx} fill="#eef2f7" stroke="#111" strokeWidth="2" />
-      {Array.from({ length: stair.numberOfSteps }).map((_, i) => <line key={i} x1={x + i * stair.treadDepth * scale} y1={y} x2={x + i * stair.treadDepth * scale} y2={y + widthPx} stroke="#94a3b8" />)}
-      {drawModulesOnRun(x, y, runPx, widthPx, true)}
-      <text x={w / 2} y={h - 8} textAnchor="middle" className="svgSmall">Top view with explicit treads ({stair.stairType})</text>
-    </svg>;
-  }
-
-  if (stair.stairType === 'l-shaped') {
-    const winderSteps = stair.turnStyle === 'winder' ? clamp(stair.winderSteps, 3, 6) : 0;
-    const straightSteps = Math.max(0, stair.numberOfSteps - winderSteps);
-    const stepsA = Math.ceil(straightSteps / 2);
-    const stepsB = Math.max(0, straightSteps - stepsA);
-    const runA = stepsA * stair.treadDepth;
-    const runB = stepsB * stair.treadDepth;
-    const landingDepth = stair.turnStyle === 'landing' ? Math.max(stair.landingDepth, 0) : 0;
-    const landingWidth = stair.turnStyle === 'landing' ? Math.max(stair.landingWidth || stair.stairWidth, 0) : stair.stairWidth;
-    const scale = Math.min((w - pad * 2) / (runA + landingDepth), (h - pad * 2) / (runB + landingWidth));
-    const widthPx = stair.stairWidth * scale;
-    const x = pad, y = h - pad - (runB + landingWidth) * scale;
-    const runAPx = runA * scale, runBPx = runB * scale, landingDepthPx = landingDepth * scale, landingWidthPx = landingWidth * scale;
-    const cx = x + runAPx;
-    const cy = y + runBPx + widthPx;
-    return <svg viewBox={`0 0 ${w} ${h}`} className="diagram">
-      <rect x={x} y={y + runBPx} width={runAPx} height={widthPx} fill="#eef2f7" stroke="#111" />
-      {Array.from({ length: stepsA }).map((_, i) => <line key={`a-${i}`} x1={x + i * stair.treadDepth * scale} y1={y + runBPx} x2={x + i * stair.treadDepth * scale} y2={y + runBPx + widthPx} stroke="#94a3b8" />)}
-      {stair.turnStyle === 'landing' ? (
-        <rect x={x + runAPx} y={y + runBPx} width={landingDepthPx} height={landingWidthPx} fill="#e2e8f0" stroke="#111" />
-      ) : (
-        <g>
-          {Array.from({ length: winderSteps }).map((_, i) => {
-            const a0 = i * (Math.PI / 2) / winderSteps;
-            const a1 = (i + 1) * (Math.PI / 2) / winderSteps;
-            const rIn = Math.max(8, (stair.winderInnerTread / (Math.PI / 2)) * winderSteps * scale);
-            const rOut = rIn + widthPx;
-            const p1 = `${cx + Math.cos(a0) * rIn},${cy - Math.sin(a0) * rIn}`;
-            const p2 = `${cx + Math.cos(a1) * rIn},${cy - Math.sin(a1) * rIn}`;
-            const p3 = `${cx + Math.cos(a1) * rOut},${cy - Math.sin(a1) * rOut}`;
-            const p4 = `${cx + Math.cos(a0) * rOut},${cy - Math.sin(a0) * rOut}`;
-            return <polygon key={`l-w-${i}`} points={`${p1} ${p2} ${p3} ${p4}`} fill={i % 2 ? '#e2e8f0' : '#eef2f7'} stroke="#111" />;
-          })}
-        </g>
-      )}
-      <rect x={x + runAPx} y={y} width={widthPx} height={runBPx} fill="#eef2f7" stroke="#111" />
-      {Array.from({ length: stepsB }).map((_, i) => <line key={`b-${i}`} x1={x + runAPx} y1={y + i * stair.treadDepth * scale} x2={x + runAPx + widthPx} y2={y + i * stair.treadDepth * scale} stroke="#94a3b8" />)}
-      {drawModulesOnRun(x, y + runBPx, runAPx, widthPx, true)}
-      <text x={w / 2} y={h - 8} textAnchor="middle" className="svgSmall">Top view (L-shape · {stair.turnStyle === 'winder' ? 'winder turn' : 'square landing turn'})</text>
-    </svg>;
-  }
-
-  const winderSteps = stair.turnStyle === 'winder' ? clamp(stair.winderSteps, 3, 6) : 0;
-  const rawStepsRun = Math.floor((stair.numberOfSteps - winderSteps) / 2);
-  const stepsRun = Math.max(0, rawStepsRun);
-  const run = stepsRun * stair.treadDepth;
-  const landingDepth = stair.turnStyle === 'landing' ? Math.max(stair.landingDepth, 0) : 0;
-  const landingWidth = stair.turnStyle === 'landing'
-    ? Math.max(stair.landingWidth || stair.stairWidth, stair.stairWidth)
-    : stair.stairWidth;
-  const winderGap = stair.turnStyle === 'winder' ? clamp(stair.stairWidth * 0.18, 80, 180) : 0;
-  const shapeW = run + landingDepth + stair.stairWidth;
-  const shapeH = run + stair.stairWidth;
-  const scale = Math.min((w - pad * 2) / shapeW, (h - pad * 2) / shapeH);
-  const winderGapPx = winderGap * scale;
-  const widthPx = stair.stairWidth * scale;
-  const runPx = run * scale;
-  const landingDepthPx = landingDepth * scale;
-  const cx = pad + runPx + widthPx / 2;
-  const cy = pad + widthPx / 2;
-  const startX = pad;
-  const startY = cy - widthPx / 2;
+  const primaryLane = { x: pad + 8, y: h / 2 - stairW * scale * 0.5, w: Math.max(90, run * scale * 0.75), h: Math.max(30, stairW * scale * 0.9) };
+  const secondaryLane = { x: primaryLane.x + primaryLane.w - 30, y: primaryLane.y - primaryLane.h, w: Math.max(80, run * scale * 0.45), h: primaryLane.h };
 
   return <svg viewBox={`0 0 ${w} ${h}`} className="diagram">
-    <rect x={startX} y={startY} width={runPx} height={widthPx} fill="#eef2f7" stroke="#111" />
-    {Array.from({ length: stepsRun }).map((_, i) => <line key={`u-a-${i}`} x1={startX + i * stair.treadDepth * scale} y1={startY} x2={startX + i * stair.treadDepth * scale} y2={startY + widthPx} stroke="#94a3b8" />)}
-    {stair.turnStyle === 'landing' ? (
-      <rect x={startX + runPx} y={startY} width={landingDepthPx} height={landingWidth * scale} fill="#e2e8f0" stroke="#111" />
-    ) : (
-      <g>
-        {Array.from({ length: winderSteps }).map((_, i) => {
-          const a0 = (i * (Math.PI / 2)) / winderSteps;
-          const a1 = ((i + 1) * (Math.PI / 2)) / winderSteps;
-          const rIn = Math.max(6, (stair.winderInnerTread / (Math.PI / 2)) * winderSteps * scale * 0.32);
-          const rOut = Math.max(rIn + 20, widthPx / 2 - winderGapPx / 2);
-
-          const leftCx = cx - winderGapPx / 2;
-          const rightCx = cx + winderGapPx / 2;
-          const topCy = cy;
-
-          const lp1 = `${leftCx + Math.cos(Math.PI - a0) * rIn},${topCy + Math.sin(Math.PI - a0) * rIn}`;
-          const lp2 = `${leftCx + Math.cos(Math.PI - a1) * rIn},${topCy + Math.sin(Math.PI - a1) * rIn}`;
-          const lp3 = `${leftCx + Math.cos(Math.PI - a1) * rOut},${topCy + Math.sin(Math.PI - a1) * rOut}`;
-          const lp4 = `${leftCx + Math.cos(Math.PI - a0) * rOut},${topCy + Math.sin(Math.PI - a0) * rOut}`;
-
-          const rp1 = `${rightCx + Math.cos(a0) * rIn},${topCy + Math.sin(a0) * rIn}`;
-          const rp2 = `${rightCx + Math.cos(a1) * rIn},${topCy + Math.sin(a1) * rIn}`;
-          const rp3 = `${rightCx + Math.cos(a1) * rOut},${topCy + Math.sin(a1) * rOut}`;
-          const rp4 = `${rightCx + Math.cos(a0) * rOut},${topCy + Math.sin(a0) * rOut}`;
-
-          return <g key={`w-${i}`}>
-            <polygon points={`${lp1} ${lp2} ${lp3} ${lp4}`} fill={i % 2 ? '#e2e8f0' : '#eef2f7'} stroke="#111" />
-            <polygon points={`${rp1} ${rp2} ${rp3} ${rp4}`} fill={i % 2 ? '#e2e8f0' : '#eef2f7'} stroke="#111" />
-          </g>;
-        })}
-        <rect x={cx - winderGapPx / 2} y={cy - widthPx / 2} width={winderGapPx} height={widthPx} fill="#f8fafc" stroke="#94a3b8" strokeDasharray="3 3" />
-      </g>
-    )}
-    <rect x={startX + runPx + landingDepthPx} y={startY} width={widthPx} height={runPx} fill="#eef2f7" stroke="#111" />
-    {Array.from({ length: stepsRun }).map((_, i) => <line key={`u-b-${i}`} x1={startX + runPx + landingDepthPx} y1={startY + i * stair.treadDepth * scale} x2={startX + runPx + landingDepthPx + widthPx} y2={startY + i * stair.treadDepth * scale} stroke="#94a3b8" />)}
-    {drawModulesOnRun(startX, startY, runPx, widthPx, true)}
-    <text x={w / 2} y={h - 8} textAnchor="middle" className="svgSmall">Top view (U-shape · {stair.turnStyle === 'winder' ? 'winder turn' : 'square landing turn'})</text>
-  </svg>;
-}
-
-function Stair3DPreview({ stair }) {
-  const w = 520, h = 220;
-  const n = clamp(stair.numberOfSteps, 3, 18);
-  const rise = 10;
-  const tread = 22;
-  const depth = 26;
-  const ox = 30;
-  const oy = h - 25;
-
-  const face = (x, y, wFace, hFace, fill, stroke = '#334155') => <rect x={x} y={y} width={wFace} height={hFace} fill={fill} stroke={stroke} />;
-  return <svg viewBox={`0 0 ${w} ${h}`} className="diagram">
-    {Array.from({ length: n }).map((_, i) => {
-      const x = ox + i * tread;
-      const y = oy - (i + 1) * rise;
-      return <g key={i}>
-        {face(x, y, tread, rise, '#94a3b8')}
-        <polygon points={`${x},${y + rise} ${x + tread},${y + rise} ${x + tread + depth},${y + rise + depth * 0.35} ${x + depth},${y + rise + depth * 0.35}`} fill="#64748b" stroke="#334155" />
-      </g>;
-    })}
-    <text x={w / 2} y={16} textAnchor="middle" className="svgSmall">3D stair preview (parametric, simplified). For L/U turns this is an indicative massing view.</text>
+    <text x={14} y={16} className="svgSmall">Stair Overview / Layout (top view)</text>
+    {type.family === 'straight' && <rect x={primaryLane.x} y={primaryLane.y} width={primaryLane.w + 60} height={primaryLane.h} fill="#eef2f7" stroke="#111"/>}
+    {type.family === 'l' && <g><rect x={primaryLane.x} y={primaryLane.y + primaryLane.h} width={primaryLane.w} height={primaryLane.h} fill="#eef2f7" stroke="#111"/><rect x={primaryLane.x + primaryLane.w - primaryLane.h} y={primaryLane.y - 10} width={primaryLane.h} height={primaryLane.h + 10} fill="#eef2f7" stroke="#111"/>{type.hasLanding && <rect x={primaryLane.x + primaryLane.w - primaryLane.h} y={primaryLane.y + primaryLane.h - 10} width={primaryLane.h} height={primaryLane.h} fill="#dbeafe" stroke="#111"/>}</g>}
+    {type.family === 'u' && <g><rect x={primaryLane.x} y={primaryLane.y + primaryLane.h + 40} width={primaryLane.w} height={primaryLane.h} fill="#eef2f7" stroke="#111"/><rect x={primaryLane.x + primaryLane.w - primaryLane.h} y={primaryLane.y + 20} width={primaryLane.h} height={primaryLane.h + 20} fill="#eef2f7" stroke="#111"/><rect x={primaryLane.x + primaryLane.w - primaryLane.h * 2} y={primaryLane.y} width={primaryLane.w * 0.65} height={primaryLane.h} fill="#eef2f7" stroke="#111"/>{type.hasLanding && <rect x={primaryLane.x + primaryLane.w - primaryLane.h} y={primaryLane.y + primaryLane.h + 20} width={primaryLane.h} height={primaryLane.h} fill="#dbeafe" stroke="#111"/>}</g>}
+    {type.family === 'spiral' && <g><circle cx={w / 2} cy={h / 2} r={80} fill="#eef2f7" stroke="#111"/><circle cx={w / 2} cy={h / 2} r={24} fill="#d1d5db" stroke="#111"/></g>}
+    {type.family === 'custom' && <polyline points={`${pad + 20},${h - 40} ${pad + 100},${h - 120} ${pad + 210},${h - 90} ${pad + 290},${h - 150} ${w - 35},${h - 110}`} fill="none" stroke="#111" strokeWidth="28" strokeLinejoin="round" />}
+    {placements.filter((p) => p.run !== 'secondary').map((p) => drawPlacement(p, primaryLane))}
+    {placements.filter((p) => p.run === 'secondary').map((p) => drawPlacement(p, secondaryLane))}
   </svg>;
 }
 
 function App() {
   const [project, setProject] = useState(defaultProject);
   const [activeTab, setActiveTab] = useState('preview');
-  const [showPlatformsInStairView, setShowPlatformsInStairView] = useState(true);
 
-  const recommendedSize = useMemo(() => suggestPlatformSize(project.staircase), [project.staircase]);
   const effectivePlatforms = useMemo(() => getEffectivePlatforms(project), [project]);
   const computedPlatforms = useMemo(() => effectivePlatforms.map((module) => computePlatform(module, project.staircase)), [effectivePlatforms, project.staircase]);
+  const recommendedSize = useMemo(() => suggestPlatformSize(project.staircase), [project.staircase]);
   const legPlan = useMemo(() => getActiveLegPlan(project, computedPlatforms), [project, computedPlatforms]);
   const cutList = useMemo(() => getCutList(computedPlatforms, legPlan, project.hardware), [computedPlatforms, legPlan, project.hardware]);
   const billOfMaterials = useMemo(() => getBillOfMaterials(computedPlatforms, legPlan, cutList, project.hardware), [computedPlatforms, legPlan, cutList, project.hardware]);
-  const warnings = useMemo(() => getGlobalWarnings(project.staircase, computedPlatforms, legPlan), [project.staircase, computedPlatforms, legPlan]);
+  const warnings = useMemo(() => getGlobalWarnings(project.staircase, computedPlatforms, project.designMode), [project.staircase, computedPlatforms, project.designMode]);
 
   const totalTopAreaM2 = mmAreaToM2(sum(cutList.filter((c) => c.part === 'Top plate'), (c) => c.width * c.length * c.qty));
   const totalLegCount = sum(legPlan, (l) => l.quantity);
   const totalWeight = sum(computedPlatforms, (p) => p.estimatedTotalWeightKg * p.module.quantity);
 
   const updateStair = (key, value) => setProject((p) => ({ ...p, staircase: { ...p.staircase, [key]: value } }));
-  const updateStairPreset = (preset) => {
-    if (preset === 'straight') {
-      setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'straight', turnStyle: 'landing' } }));
-      return;
-    }
-    if (preset === 'l-winder') {
-      setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'l-shaped', turnStyle: 'winder' } }));
-      return;
-    }
-    if (preset === 'l-landing') {
-      setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'l-shaped', turnStyle: 'landing' } }));
-      return;
-    }
-    if (preset === 'u-winder') {
-      setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'u-shaped', turnStyle: 'winder' } }));
-      return;
-    }
-    setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'u-shaped', turnStyle: 'landing' } }));
-  };
   const updateRepeatedTemplate = (key, value) => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, repeatedTemplate: { ...p.platformConfig.repeatedTemplate, [key]: value } } }));
   const updateMixedModule = (id, key, value) => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, modules: p.platformConfig.modules.map((m) => m.id === id ? { ...m, [key]: value } : m) } }));
   const updateHardware = (key, value) => setProject((p) => ({ ...p, hardware: { ...p.hardware, [key]: value } }));
   const updateLegConfig = (key, value) => setProject((p) => ({ ...p, legConfig: { ...p.legConfig, [key]: value } }));
 
-  const addMixedModule = () => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, modules: [...p.platformConfig.modules, { ...p.platformConfig.repeatedTemplate, id: uniqueId('module'), name: `Module ${p.platformConfig.modules.length + 1}`, quantity: 1 }] } }));
-  const duplicateMixedModule = (id) => setProject((p) => {
-    const source = p.platformConfig.modules.find((m) => m.id === id);
-    if (!source) return p;
-    return { ...p, platformConfig: { ...p.platformConfig, modules: [...p.platformConfig.modules, { ...source, id: uniqueId('module'), name: `${source.name} copy` }] } };
-  });
-  const removeMixedModule = (id) => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, modules: p.platformConfig.modules.filter((m) => m.id !== id) } }));
-  const addManualLeg = () => setProject((p) => ({ ...p, legConfig: { ...p.legConfig, manualLegs: [...p.legConfig.manualLegs, { id: uniqueId('manual-leg'), label: 'Custom leg', length: 120, quantity: 2 }] } }));
-  const updateManualLeg = (id, key, value) => setProject((p) => ({ ...p, legConfig: { ...p.legConfig, manualLegs: p.legConfig.manualLegs.map((l) => l.id === id ? { ...l, [key]: value } : l) } }));
-  const removeManualLeg = (id) => setProject((p) => ({ ...p, legConfig: { ...p.legConfig, manualLegs: p.legConfig.manualLegs.filter((l) => l.id !== id) } }));
-
   const moduleEditor = project.platformConfig.mode === 'repeat' ? [project.platformConfig.repeatedTemplate] : project.platformConfig.modules;
+  const modulesById = useMemo(() => new Map(effectivePlatforms.map((m) => [m.id, m])), [effectivePlatforms]);
 
-  return (
-    <div className="app">
-      <header className="hero">
-        <h1>Modular Stair Work Platform Configurator · PR version #6</h1>
-        <p>Workshop-focused planning tool for modular platforms, legs, pockets, BOM and cut list.</p>
-        <div className="stats">
-          <div><b>{sum(effectivePlatforms, (m) => m.quantity)}</b><span>Modules</span></div>
-          <div><b>{totalTopAreaM2.toFixed(2)} m²</b><span>Top area</span></div>
-          <div><b>{totalLegCount}</b><span>Legs</span></div>
-          <div><b>{formatKg(totalWeight)}</b><span>Weight est.</span></div>
-        </div>
-      </header>
+  const resetPlacements = () => {
+    const first = effectivePlatforms[0];
+    if (!first) return;
+    setProject((p) => ({
+      ...p,
+      platformConfig: {
+        ...p.platformConfig,
+        placements: Array.from({ length: Math.max(1, first.quantity) }, (_, i) => ({ id: uniqueId('place'), moduleRef: first.id, enabled: true, run: i % 2 ? 'secondary' : 'primary', along: 10 + i * 12, across: 50 })),
+      },
+    }));
+  };
 
-      <WarningList warnings={warnings} />
+  const updatePlacement = (id, key, value) => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, placements: p.platformConfig.placements.map((place) => place.id === id ? { ...place, [key]: value } : place) } }));
 
-      <div className="layout">
-        <main>
-          <section className="card">
-            <h2>1) Staircase Input</h2>
-            <div className="grid2">
-              <NumberInput label="Step height" value={project.staircase.stepHeight} onChange={(v) => updateStair('stepHeight', v)} suffix="mm" min={50} />
-              <NumberInput label="Step depth" value={project.staircase.treadDepth} onChange={(v) => updateStair('treadDepth', v)} suffix="mm" min={100} />
-              <NumberInput label="Stair width" value={project.staircase.stairWidth} onChange={(v) => updateStair('stairWidth', v)} suffix="mm" min={300} />
-              <NumberInput label="Stairwell width" value={project.staircase.stairwellWidth} onChange={(v) => updateStair('stairwellWidth', v)} suffix="mm" min={500} />
-              <NumberInput label="Number of steps" value={project.staircase.numberOfSteps} onChange={(v) => updateStair('numberOfSteps', v)} min={1} />
-              <SelectInput
-                label="Typical stair layout"
-                value={getStairLayoutPreset(project.staircase)}
-                onChange={updateStairPreset}
-                options={[
-                  { value: 'straight', label: 'Straight' },
-                  { value: 'l-winder', label: 'L-shape, no landing' },
-                  { value: 'l-landing', label: 'L-shape, with landing' },
-                  { value: 'u-winder', label: 'U-shape, no landing' },
-                  { value: 'u-landing', label: 'U-shape, with landing' },
-                ]}
-              />
-              <SelectInput label="Stair type" value={project.staircase.stairType} onChange={(v) => updateStair('stairType', v)} options={[{ value: 'straight', label: 'Straight' }, { value: 'u-shaped', label: 'U-shaped' }, { value: 'l-shaped', label: 'L-shaped' }]} />
-              {project.staircase.stairType !== 'straight' && <SelectInput label="Turn transition" value={project.staircase.turnStyle} onChange={(v) => updateStair('turnStyle', v)} options={[{ value: 'landing', label: 'With landing' }, { value: 'winder', label: 'No landing (angled steps)' }]} />}
-              {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'winder' && <NumberInput label="Winder steps in turn" value={project.staircase.winderSteps} onChange={(v) => updateStair('winderSteps', v)} min={3} max={6} />}
-              {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'winder' && <NumberInput label="Inner winder tread (walk-line proxy)" value={project.staircase.winderInnerTread} onChange={(v) => updateStair('winderInnerTread', v)} suffix="mm" min={60} max={260} />}
-              {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'landing' && <NumberInput label="Landing depth" value={project.staircase.landingDepth} onChange={(v) => updateStair('landingDepth', v)} suffix="mm" min={0} />}
-              {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'landing' && <NumberInput label="Landing width" value={project.staircase.landingWidth} onChange={(v) => updateStair('landingWidth', v)} suffix="mm" min={0} />}
-              <SelectInput label="Handrail" value={project.staircase.handrailPosition} onChange={(v) => updateStair('handrailPosition', v)} options={[{ value: 'none', label: 'None' }, { value: 'left', label: 'Left' }, { value: 'right', label: 'Right' }, { value: 'both', label: 'Both' }]} />
-              <NumberInput label="Wall-handrail clearance" value={project.staircase.wallToHandrailClearance} onChange={(v) => updateStair('wallToHandrailClearance', v)} suffix="mm" min={0} />
-              <NumberInput label="Obstruction depth" value={project.staircase.obstructionDepth} onChange={(v) => updateStair('obstructionDepth', v)} suffix="mm" min={0} />
-              <ToggleInput label="Stair narrows at point" checked={project.staircase.narrowsAtPoint} onChange={(v) => updateStair('narrowsAtPoint', v)} />
-            </div>
-            {project.staircase.narrowsAtPoint && <div className="grid2"><NumberInput label="Narrowest width" value={project.staircase.narrowestWidth} onChange={(v) => updateStair('narrowestWidth', v)} suffix="mm" min={300} /></div>}
-            {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'winder' && (
-              <p className="hint">For winders, <b>step depth</b> is treated as the straight-run tread depth, while the turn uses angled steps sized by “inner winder tread”.</p>
-            )}
-          </section>
-
-          <section className="card">
-            <h2>2) Platform Setup</h2>
-            <div className="btnRow">
-              <button className={project.platformConfig.mode === 'repeat' ? 'active' : ''} onClick={() => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, mode: 'repeat' } }))}>One standard platform repeated</button>
-              <button className={project.platformConfig.mode === 'mixed' ? 'active' : ''} onClick={() => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, mode: 'mixed' } }))}>Multiple different platforms</button>
-            </div>
-            <p className="hint">Recommended module: {recommendedSize.recommendedWidth} x {recommendedSize.recommendedLength} mm (editable).</p>
-            {project.platformConfig.mode === 'repeat' ? (
-              <div className="grid2">
-                <NumberInput label="Repeated module count" value={project.platformConfig.repeatedCount} onChange={(v) => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, repeatedCount: v } }))} min={1} max={20} />
-                <button className="secondary" onClick={() => { updateRepeatedTemplate('width', recommendedSize.recommendedWidth); updateRepeatedTemplate('length', recommendedSize.recommendedLength); }}>Use recommended size</button>
-              </div>
-            ) : <button className="secondary" onClick={addMixedModule}>+ Add module</button>}
-
-            {moduleEditor.map((module) => {
-              const isRepeat = project.platformConfig.mode === 'repeat';
-              return <div key={module.id} className="moduleCard">
-                <div className="moduleHead"><b>{isRepeat ? 'Standard repeated module' : module.name}</b>{!isRepeat && <span><button onClick={() => duplicateMixedModule(module.id)}>Duplicate</button><button onClick={() => removeMixedModule(module.id)}>Remove</button></span>}</div>
-                <div className="grid2">
-                  {!isRepeat && <label className="field"><span>Module name</span><input value={module.name} onChange={(e) => updateMixedModule(module.id, 'name', e.target.value)} /></label>}
-                  {!isRepeat && <NumberInput label="Quantity" value={module.quantity} onChange={(v) => updateMixedModule(module.id, 'quantity', v)} min={1} max={20} />}
-                  <NumberInput label="Module width" value={module.width} onChange={(v) => isRepeat ? updateRepeatedTemplate('width', v) : updateMixedModule(module.id, 'width', v)} suffix="mm" min={300} />
-                  <NumberInput label="Module length" value={module.length} onChange={(v) => isRepeat ? updateRepeatedTemplate('length', v) : updateMixedModule(module.id, 'length', v)} suffix="mm" min={500} />
-                  <NumberInput label="Top thickness" value={module.topThickness} onChange={(v) => isRepeat ? updateRepeatedTemplate('topThickness', v) : updateMixedModule(module.id, 'topThickness', v)} suffix="mm" min={9} />
-                  <NumberInput label="Frame timber width" value={module.frameWidth} onChange={(v) => isRepeat ? updateRepeatedTemplate('frameWidth', v) : updateMixedModule(module.id, 'frameWidth', v)} suffix="mm" min={20} />
-                  <NumberInput label="Frame timber height" value={module.frameHeight} onChange={(v) => isRepeat ? updateRepeatedTemplate('frameHeight', v) : updateMixedModule(module.id, 'frameHeight', v)} suffix="mm" min={20} />
-                  <NumberInput label="Leg timber width" value={module.legWidth} onChange={(v) => isRepeat ? updateRepeatedTemplate('legWidth', v) : updateMixedModule(module.id, 'legWidth', v)} suffix="mm" min={20} />
-                  <NumberInput label="Leg timber height" value={module.legHeight} onChange={(v) => isRepeat ? updateRepeatedTemplate('legHeight', v) : updateMixedModule(module.id, 'legHeight', v)} suffix="mm" min={20} />
-                  <SelectInput label="Layout style" value={module.layoutStyle} onChange={(v) => isRepeat ? updateRepeatedTemplate('layoutStyle', v) : updateMixedModule(module.id, 'layoutStyle', v)} options={[{ value: 'fixed-grid', label: 'Fixed grid' }, { value: 'flexible-pockets', label: 'Flexible local pockets' }]} />
-                  <SelectInput label="Leg position pattern" value={module.pocketPattern} onChange={(v) => isRepeat ? updateRepeatedTemplate('pocketPattern', v) : updateMixedModule(module.id, 'pocketPattern', v)} options={[{ value: '3x3', label: '3 x 3' }, { value: '4x4', label: '4 x 4' }, { value: 'custom', label: 'Custom' }]} />
-                  {module.pocketPattern === 'custom' && <><NumberInput label="Custom rows" value={module.customRows} onChange={(v) => isRepeat ? updateRepeatedTemplate('customRows', v) : updateMixedModule(module.id, 'customRows', v)} min={2} max={8} /><NumberInput label="Custom cols" value={module.customCols} onChange={(v) => isRepeat ? updateRepeatedTemplate('customCols', v) : updateMixedModule(module.id, 'customCols', v)} min={2} max={8} /></>}
-                </div>
-              </div>;
-            })}
-          </section>
-
-          <section className="card">
-            <h2>3) Leg Setup</h2>
-            <div className="btnRow"><button className={project.legConfig.mode === 'auto' ? 'active' : ''} onClick={() => updateLegConfig('mode', 'auto')}>Auto</button><button className={project.legConfig.mode === 'manual' ? 'active' : ''} onClick={() => updateLegConfig('mode', 'manual')}>Manual</button></div>
-            <div className="grid2"><SelectInput label="Grouping" value={project.legConfig.grouping} onChange={(v) => updateLegConfig('grouping', v)} options={[{ value: 'step-increments', label: 'Step increments' }, { value: 'straight', label: 'Straight legs' }]} /><NumberInput label="Base leg length" value={project.legConfig.baseLegLength} onChange={(v) => updateLegConfig('baseLegLength', v)} suffix="mm" min={40} /></div>
-            {project.legConfig.mode === 'auto' ? <div className="chips">{legPlan.map((l) => <span key={`${l.label}-${l.length}`}>{l.label}: {l.length} mm × {l.quantity}</span>)}</div> : <div>{project.legConfig.manualLegs.map((leg) => <div key={leg.id} className="grid4"><label className="field"><span>Label</span><input value={leg.label} onChange={(e)=>updateManualLeg(leg.id,'label',e.target.value)} /></label><NumberInput label="Length" value={leg.length} onChange={(v)=>updateManualLeg(leg.id,'length',v)} suffix="mm" min={40} /><NumberInput label="Quantity" value={leg.quantity} onChange={(v)=>updateManualLeg(leg.id,'quantity',v)} min={1} /><button onClick={()=>removeManualLeg(leg.id)}>Remove</button></div>)}<button className="secondary" onClick={addManualLeg}>+ Add leg entry</button></div>}
-          </section>
-
-          <section className="card">
-            <h2>4) Hardware Options</h2>
-            <div className="grid2">
-              <NumberInput label="Bolt length" value={project.hardware.boltLength} onChange={(v)=>updateHardware('boltLength', v)} suffix="mm" min={20} />
-              <ToggleInput label="Include washers" checked={project.hardware.includeWashers} onChange={(v)=>updateHardware('includeWashers', v)} />
-              <ToggleInput label="Include anti-slip pads" checked={project.hardware.includeAntiSlipPads} onChange={(v)=>updateHardware('includeAntiSlipPads', v)} />
-              <ToggleInput label="Include wood glue" checked={project.hardware.includeGlue} onChange={(v)=>updateHardware('includeGlue', v)} />
-              <ToggleInput label="Include optional bracing" checked={project.hardware.includeOptionalBracing} onChange={(v)=>updateHardware('includeOptionalBracing', v)} />
-            </div>
-          </section>
-        </main>
-
-        <aside>
-          <section className="card">
-            <h2>5) Live Preview & Outputs</h2>
-            <div className="btnRow"><button className={activeTab==='preview'?'active':''} onClick={()=>setActiveTab('preview')}>Preview</button><button className={activeTab==='materials'?'active':''} onClick={()=>setActiveTab('materials')}>Materials</button><button className={activeTab==='report'?'active':''} onClick={()=>setActiveTab('report')}>Report</button></div>
-            {activeTab==='preview' && <div>{computedPlatforms.map((p)=><div key={p.module.id} className="moduleCard"><h3>{p.module.name} · {p.module.width} x {p.module.length} mm · qty {p.module.quantity}</h3><div className="chips"><span>Pockets: {p.pocketCount}</span><span>Recommended legs in use: {p.recommendedLegsUsed}</span><span>Weight: {formatKg(p.estimatedTotalWeightKg)}</span></div><div className="diagramGrid"><TopViewDiagram platform={p} /><UndersideDiagram platform={p} /><SideViewDiagram stair={project.staircase} legPlan={legPlan} platform={p} /></div></div>)}<div className="moduleCard"><div className="toggle"><span>Show platforms in stair overview</span><input type="checkbox" checked={showPlatformsInStairView} onChange={(e)=>setShowPlatformsInStairView(e.target.checked)} /></div><StairTopViewDiagram stair={project.staircase} platforms={computedPlatforms} showPlatforms={showPlatformsInStairView} /><Stair3DPreview stair={project.staircase} /></div></div>}
-            {activeTab==='materials' && <div><h3>Bill of Materials</h3><Table headers={['Category','Item','Qty','Unit','Notes']} rows={billOfMaterials.map((i)=>[i.category,i.name,i.qty,i.unit,i.notes||'—'])} /><h3>Cut list</h3><Table headers={['Part','Material','Width','Length','Qty','Platform']} rows={cutList.map((i)=>[i.part,i.material,formatMm(i.width),formatMm(i.length),i.qty,i.platform||'—'])} /></div>}
-            {activeTab==='report' && <div><h3>Printable summary</h3><p>Stair type: {project.staircase.stairType}{project.staircase.stairType !== 'straight' ? ` (${project.staircase.turnStyle})` : ''}, step height: {formatMm(project.staircase.stepHeight)}, straight-run step depth: {formatMm(project.staircase.treadDepth)}.</p><p>Effective stair width: {formatMm(recommendedSize.effectiveStairWidth)}; total legs: {totalLegCount}; total top area: {totalTopAreaM2.toFixed(2)} m².</p><p>Total leg timber: {formatMeters(sum(legPlan, (leg) => leg.length * leg.quantity))}. Tool is planning-only, not engineering certification.</p><Table headers={['Platform','Dimensions','Top','Frame','Pockets','Legs in use','Weight']} rows={computedPlatforms.map((p)=>[`${p.module.name} (${p.module.quantity}x)`,`${p.module.width} x ${p.module.length} mm`,`${p.module.topThickness} mm plywood`,`${p.module.frameWidth} x ${p.module.frameHeight}`,`${p.pocketRows} x ${p.pocketCols} (${p.pocketCount})`,p.recommendedLegsUsed,formatKg(p.estimatedTotalWeightKg * p.module.quantity)])} /></div>}
-          </section>
-        </aside>
+  return <div className="app">
+    <header className="hero">
+      <h1>Modular Stair Work Platform Configurator · 1.7</h1>
+      <p>Desktop-first workshop planner with optional stair modeling and live module placement context.</p>
+      <div className="stats">
+        <div><b>{sum(effectivePlatforms, (m) => m.quantity)}</b><span>Modules</span></div>
+        <div><b>{totalTopAreaM2.toFixed(2)} m²</b><span>Top area</span></div>
+        <div><b>{totalLegCount}</b><span>Legs</span></div>
+        <div><b>{formatKg(totalWeight)}</b><span>Weight est.</span></div>
       </div>
+    </header>
+
+    <WarningList warnings={warnings} />
+
+    <div className="layout">
+      <main>
+        <section className="card">
+          <h2>0) Design mode (stair modeling is optional)</h2>
+          <div className="btnRow">
+            <button className={project.designMode === 'quick' ? 'active' : ''} onClick={() => setProject((p) => ({ ...p, designMode: 'quick' }))}>Quick platform design</button>
+            <button className={project.designMode === 'stair-specific' ? 'active' : ''} onClick={() => setProject((p) => ({ ...p, designMode: 'stair-specific' }))}>Stair-specific design</button>
+          </div>
+          <p className="hint">Quick mode skips detailed stair archetype modeling; stair-specific mode drives a contextual staircase preview.</p>
+        </section>
+
+        <section className="card">
+          <h2>1) Select the stair type that most closely matches your staircase</h2>
+          <StairTypeSelector selected={project.staircase.selectedTypeCard} onSelect={(id) => updateStair('selectedTypeCard', id)} />
+        </section>
+
+        <section className="card">
+          <h2>2) Stair dimensions</h2>
+          <div className="grid2">
+            <NumberInput label="Step height" value={project.staircase.stepHeight} onChange={(v) => updateStair('stepHeight', v)} suffix="mm" min={50} />
+            <NumberInput label="Tread depth" value={project.staircase.treadDepth} onChange={(v) => updateStair('treadDepth', v)} suffix="mm" min={100} />
+            <NumberInput label="Stair width" value={project.staircase.stairWidth} onChange={(v) => updateStair('stairWidth', v)} suffix="mm" min={300} />
+            <NumberInput label="Total number of steps" value={project.staircase.numberOfSteps} onChange={(v) => updateStair('numberOfSteps', v)} min={1} />
+            <NumberInput label="Landing depth (if relevant)" value={project.staircase.landingDepth} onChange={(v) => updateStair('landingDepth', v)} suffix="mm" min={0} />
+            <NumberInput label="Landing width (if relevant)" value={project.staircase.landingWidth} onChange={(v) => updateStair('landingWidth', v)} suffix="mm" min={0} />
+            <NumberInput label="Total stairwell width" value={project.staircase.stairwellWidth} onChange={(v) => updateStair('stairwellWidth', v)} suffix="mm" min={500} />
+            <SelectInput label="Handrail / obstruction zone" value={project.staircase.handrailPosition} onChange={(v) => updateStair('handrailPosition', v)} options={[{ value: 'none', label: 'No handrail zone' }, { value: 'left', label: 'Left side zone' }, { value: 'right', label: 'Right side zone' }, { value: 'both', label: 'Both sides zone' }]} />
+            <NumberInput label="Wall-handrail clearance" value={project.staircase.wallToHandrailClearance} onChange={(v) => updateStair('wallToHandrailClearance', v)} suffix="mm" min={0} />
+            <NumberInput label="Obstruction depth" value={project.staircase.obstructionDepth} onChange={(v) => updateStair('obstructionDepth', v)} suffix="mm" min={0} />
+            <ToggleInput label="Stair narrows at point" checked={project.staircase.narrowsAtPoint} onChange={(v) => updateStair('narrowsAtPoint', v)} />
+            {project.staircase.narrowsAtPoint && <NumberInput label="Narrowest width" value={project.staircase.narrowestWidth} onChange={(v) => updateStair('narrowestWidth', v)} suffix="mm" min={300} />}
+          </div>
+        </section>
+
+        <section className="card">
+          <h2>3) Platform modules</h2>
+          <div className="btnRow">
+            <button className={project.platformConfig.mode === 'repeat' ? 'active' : ''} onClick={() => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, mode: 'repeat' } }))}>Repeat one module</button>
+            <button className={project.platformConfig.mode === 'mixed' ? 'active' : ''} onClick={() => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, mode: 'mixed' } }))}>Mixed modules</button>
+            <button className="secondary" onClick={resetPlacements}>Auto-generate placements</button>
+          </div>
+          <p className="hint">Recommended module: {recommendedSize.recommendedWidth} x {recommendedSize.recommendedLength} mm.</p>
+          {moduleEditor.map((module) => {
+            const isRepeat = project.platformConfig.mode === 'repeat';
+            return <div key={module.id} className="moduleCard"><div className="grid2">
+              {!isRepeat && <label className="field"><span>Module name</span><input value={module.name} onChange={(e) => updateMixedModule(module.id, 'name', e.target.value)} /></label>}
+              {!isRepeat && <NumberInput label="Quantity" value={module.quantity} onChange={(v) => updateMixedModule(module.id, 'quantity', v)} min={1} max={20} />}
+              <NumberInput label="Width" value={module.width} onChange={(v) => isRepeat ? updateRepeatedTemplate('width', v) : updateMixedModule(module.id, 'width', v)} suffix="mm" min={300} />
+              <NumberInput label="Length" value={module.length} onChange={(v) => isRepeat ? updateRepeatedTemplate('length', v) : updateMixedModule(module.id, 'length', v)} suffix="mm" min={500} />
+              <SelectInput label="Pocket pattern" value={module.pocketPattern} onChange={(v) => isRepeat ? updateRepeatedTemplate('pocketPattern', v) : updateMixedModule(module.id, 'pocketPattern', v)} options={[{ value: '3x3', label: '3 x 3' }, { value: '4x4', label: '4 x 4' }, { value: 'custom', label: 'Custom' }]} />
+              {module.pocketPattern === 'custom' && <><NumberInput label="Custom rows" value={module.customRows} onChange={(v) => isRepeat ? updateRepeatedTemplate('customRows', v) : updateMixedModule(module.id, 'customRows', v)} min={2} max={8} /><NumberInput label="Custom cols" value={module.customCols} onChange={(v) => isRepeat ? updateRepeatedTemplate('customCols', v) : updateMixedModule(module.id, 'customCols', v)} min={2} max={8} /></>}
+            </div></div>;
+          })}
+          <h3>Module placement in stair context</h3>
+          {project.platformConfig.placements.map((place) => <div key={place.id} className="placementRow">
+            <ToggleInput label={place.id} checked={place.enabled} onChange={(v) => updatePlacement(place.id, 'enabled', v)} />
+            <SelectInput label="Module" value={place.moduleRef} onChange={(v) => updatePlacement(place.id, 'moduleRef', v)} options={effectivePlatforms.map((m) => ({ value: m.id, label: m.name }))} />
+            <SelectInput label="Run" value={place.run} onChange={(v) => updatePlacement(place.id, 'run', v)} options={[{ value: 'primary', label: 'Primary run' }, { value: 'secondary', label: 'Secondary / return run' }]} />
+            <NumberInput label="Along run" value={place.along} onChange={(v) => updatePlacement(place.id, 'along', clamp(v, 0, 100))} suffix="%" min={0} max={100} />
+            <NumberInput label="Across width" value={place.across} onChange={(v) => updatePlacement(place.id, 'across', clamp(v, 0, 100))} suffix="%" min={0} max={100} />
+          </div>)}
+        </section>
+
+        <section className="card">
+          <h2>4) Legs and pockets</h2>
+          <div className="btnRow"><button className={project.legConfig.mode === 'auto' ? 'active' : ''} onClick={() => updateLegConfig('mode', 'auto')}>Auto</button><button className={project.legConfig.mode === 'manual' ? 'active' : ''} onClick={() => updateLegConfig('mode', 'manual')}>Manual</button></div>
+          <div className="grid2"><SelectInput label="Grouping" value={project.legConfig.grouping} onChange={(v) => updateLegConfig('grouping', v)} options={[{ value: 'step-increments', label: 'Step increments' }, { value: 'straight', label: 'Straight legs' }]} /><NumberInput label="Base leg length" value={project.legConfig.baseLegLength} onChange={(v) => updateLegConfig('baseLegLength', v)} suffix="mm" min={40} /></div>
+          <div className="chips">{legPlan.map((l) => <span key={`${l.label}-${l.length}`}>{l.label}: {l.length} mm × {l.quantity}</span>)}</div>
+        </section>
+
+        <section className="card">
+          <h2>5) Materials and cut list</h2>
+          <Table headers={['Category', 'Item', 'Qty', 'Unit']} rows={billOfMaterials.map((i) => [i.category, i.name, i.qty, i.unit])} />
+          <Table headers={['Part', 'Material', 'Width', 'Length', 'Qty', 'Platform']} rows={cutList.map((i) => [i.part, i.material, formatMm(i.width), formatMm(i.length), i.qty, i.platform || '—'])} />
+        </section>
+      </main>
+
+      <aside>
+        <section className="card">
+          <h2>Live staircase + module preview</h2>
+          <div className="btnRow"><button className={activeTab === 'preview' ? 'active' : ''} onClick={() => setActiveTab('preview')}>Stair Overview</button><button className={activeTab === 'report' ? 'active' : ''} onClick={() => setActiveTab('report')}>Build Summary</button><button className={activeTab === 'architecture' ? 'active' : ''} onClick={() => setActiveTab('architecture')}>Architecture</button></div>
+          {activeTab === 'preview' && <StairOverviewLayout stair={project.staircase} placements={project.platformConfig.placements} modulesById={modulesById} />}
+          {activeTab === 'report' && <div><p>Flow: 1) Stair type → 2) Stair dimensions → 3) Modules → 4) Legs/pockets → 5) Materials.</p><p>Stair archetype: <b>{getStairTypeMeta(project.staircase).label}</b>. Effective stair width: <b>{formatMm(recommendedSize.effectiveStairWidth)}</b>.</p><Table headers={['Module', 'Dims', 'Qty', 'Pockets', 'Weight']} rows={computedPlatforms.map((p) => [p.module.name, `${p.module.width} x ${p.module.length} mm`, p.module.quantity, `${p.pocketRows} x ${p.pocketCols}`, formatKg(p.estimatedTotalWeightKg * p.module.quantity)])} /></div>}
+          {activeTab === 'architecture' && <div className="archNotes"><h3>Updated architecture overview</h3><ul><li>Staircase geometry is a dedicated model (`project.staircase`) and drives the live layout preview.</li><li>Platform modules are separate reusable objects (`project.platformConfig.repeatedTemplate` / `modules`).</li><li>Placement objects are independent (`project.platformConfig.placements`) and position modules relative to staircase runs.</li></ul><h3>Updated data model</h3><ul><li><b>designMode</b>: quick vs stair-specific flow.</li><li><b>staircase.selectedTypeCard</b>: archetype selector for straight/L/U/return/spiral/custom.</li><li><b>placements[]</b>: toggle, run selection, and % offsets for module fit testing.</li></ul><h3>Updated rendering logic</h3><ul><li>Stair Overview / Layout renders simplified top-view geometry per stair archetype.</li><li>Placements are drawn as movable overlays on primary/secondary runs.</li><li>Materials + cut list remain generated from module and leg models.</li></ul></div>}
+        </section>
+      </aside>
     </div>
-  );
+  </div>;
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);

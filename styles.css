@@ -14,7 +14,6 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,Segoe UI,
 .card h2{margin:0 0 10px;font-size:18px}
 .card h3{margin:8px 0}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.grid4{display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:8px;align-items:end;margin-bottom:8px}
 .field{display:flex;flex-direction:column;gap:4px;font-size:13px}
 .field span{font-weight:600;color:#374151}
 input,select,button{font-size:14px}
@@ -29,16 +28,12 @@ button.active{background:#111827;color:#fff;border-color:#111827}
 button.secondary{background:#fff}
 .hint{font-size:13px;color:#475569;background:#eef2ff;padding:8px;border-radius:8px}
 .moduleCard{border:1px solid #d1d5db;background:#f9fafb;border-radius:10px;padding:10px;margin-top:8px}
-.moduleHead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.moduleHead span{display:flex;gap:6px}
 .warning{border:1px solid #f59e0b;background:#fffbeb;border-radius:12px;padding:10px;margin:10px 0}
 .warning h3{margin:0 0 6px}
 .warning ul{margin:0;padding-left:18px}
 .warning li{margin:2px 0;font-size:13px}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
 .chips span{background:#fff;border:1px solid #cbd5e1;border-radius:999px;padding:4px 8px;font-size:12px}
-.diagramGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.diagramGrid .diagram:last-child{grid-column:1/-1}
 .diagram{width:100%;border:1px solid #cbd5e1;border-radius:10px;background:#fff}
 .svgSmall{font-size:11px;fill:#475569}
 .svgTiny{font-size:10px;fill:#475569}
@@ -46,5 +41,11 @@ button.secondary{background:#fff}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{padding:8px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}
 th{background:#f8fafc}
+.stairTypeGrid{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:8px}
+.stairTypeCard{display:flex;flex-direction:column;align-items:flex-start;gap:6px;background:#fff;border:1px solid #cbd5e1;padding:8px;border-radius:10px;text-align:left}
+.stairTypeCard svg{width:100%;height:70px;background:#f8fafc;border-radius:8px}
+.stairTypeCard.activeCard{border-color:#0f172a;box-shadow:0 0 0 2px #cbd5e1}
+.placementRow{display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px}
+.archNotes ul{margin:0 0 8px;padding-left:18px}
 @media (max-width:1200px){.layout{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
-@media (max-width:800px){.grid2,.grid4,.diagramGrid{grid-template-columns:1fr}}
+@media (max-width:900px){.grid2,.placementRow,.stairTypeGrid{grid-template-columns:1fr}}
