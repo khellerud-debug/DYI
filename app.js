@@ -194,13 +194,23 @@ function suggestPlatformSize(stair) {
 
   let suggestedLengthBase = 900;
   if (stair.stairType === 'straight') suggestedLengthBase = Math.min(900, stair.treadDepth * 3 + 120);
-  if (stair.stairType === 'u-shaped') suggestedLengthBase = Math.min(900, Math.max(650, stair.landingDepth || 900));
-  if (stair.stairType === 'l-shaped') suggestedLengthBase = Math.min(900, Math.max(650, Math.min(stair.landingDepth || 900, stair.stairwellWidth / 1.8)));
+  if (stair.stairType === 'u-shaped') {
+    const landingLongSide = Math.max(stair.landingDepth || 900, stair.landingWidth || stair.stairWidth || 900);
+    suggestedLengthBase = Math.min(900, Math.max(650, landingLongSide));
+  }
+  if (stair.stairType === 'l-shaped') {
+    const landingDepth = stair.landingDepth || 900;
+    const landingWidth = stair.landingWidth || stair.stairWidth || 900;
+    const effectiveLanding = Math.min(landingDepth, landingWidth);
+    suggestedLengthBase = Math.min(900, Math.max(650, Math.min(effectiveLanding, stair.stairwellWidth / 1.8)));
+  }
 
   const maximumLength = clamp(stair.stairType === 'straight' ? stair.treadDepth * 4 + 150 : Math.max(stair.landingDepth, 850), 650, 1300);
+  const recommendedWidthBase = Math.min(maxWidth, 600);
+  const recommendedWidth = maxWidth < 450 ? maxWidth : clamp(recommendedWidthBase, 450, maxWidth);
 
   return {
-    recommendedWidth: roundTo(clamp(Math.min(maxWidth, 600), 450, maxWidth), 10),
+    recommendedWidth: roundTo(recommendedWidth, 10),
     recommendedLength: roundTo(clamp(suggestedLengthBase, 650, maximumLength), 10),
     maximumWidth: roundTo(maxWidth, 10),
     maximumLength: roundTo(maximumLength, 10),
@@ -326,12 +336,25 @@ function getCutList(platforms, legPlan, hardware) {
     cuts.push({ part: 'Pocket guide block, 45° relief', material: `${m.frameWidth} x ${m.frameHeight} timber`, width: m.frameWidth, length: 120, qty: totalPocketBlocks * m.quantity, platform: m.name });
   });
 
-  const legMaterial = platforms[0] ? `${platforms[0].module.legWidth} x ${platforms[0].module.legHeight} timber` : '48 x 73 timber';
-  const legWidth = platforms[0]?.module.legWidth || 48;
+  const totalModuleQty = Math.max(1, sum(platforms, (p) => p.module.quantity));
+  const legProfiles = platforms.length
+    ? platforms.map((p) => ({
+      material: `${p.module.legWidth} x ${p.module.legHeight} timber`,
+      width: p.module.legWidth,
+      qtyWeight: p.module.quantity / totalModuleQty,
+      platform: p.module.name,
+    }))
+    : [{ material: '48 x 73 timber', width: 48, qtyWeight: 1, platform: 'All platforms' }];
 
   legPlan.forEach((leg) => {
-    cuts.push({ part: 'Leg', material: legMaterial, width: legWidth, length: leg.length, qty: leg.quantity, platform: 'All platforms' });
-    if (hardware.includeOptionalBracing && leg.length >= 600) cuts.push({ part: 'Optional bracing piece', material: legMaterial, width: legWidth, length: 280, qty: leg.quantity * 2, platform: 'All platforms' });
+    let remaining = leg.quantity;
+    legProfiles.forEach((profile, idx) => {
+      const qty = idx === legProfiles.length - 1 ? remaining : Math.round(leg.quantity * profile.qtyWeight);
+      remaining -= qty;
+      if (qty <= 0) return;
+      cuts.push({ part: 'Leg', material: profile.material, width: profile.width, length: leg.length, qty, platform: profile.platform });
+      if (hardware.includeOptionalBracing && leg.length >= 600) cuts.push({ part: 'Optional bracing piece', material: profile.material, width: profile.width, length: 280, qty: qty * 2, platform: profile.platform });
+    });
   });
 
   return cuts;
@@ -513,15 +536,16 @@ function StairTopViewDiagram({ stair, platforms, showPlatforms }) {
     const stepsB = stair.numberOfSteps - stepsA;
     const runA = stepsA * stair.treadDepth;
     const runB = stepsB * stair.treadDepth;
-    const landing = Math.max(stair.landingDepth, stair.stairWidth);
-    const scale = Math.min((w - pad * 2) / (runA + landing), (h - pad * 2) / (runB + landing));
+    const landingDepth = Math.max(stair.landingDepth, 0);
+    const landingWidth = Math.max(stair.landingWidth || stair.stairWidth, 0);
+    const scale = Math.min((w - pad * 2) / (runA + landingDepth), (h - pad * 2) / (runB + landingWidth));
     const widthPx = stair.stairWidth * scale;
-    const x = pad, y = h - pad - (runB + landing) * scale;
-    const runAPx = runA * scale, runBPx = runB * scale, landingPx = landing * scale;
+    const x = pad, y = h - pad - (runB + landingWidth) * scale;
+    const runAPx = runA * scale, runBPx = runB * scale, landingDepthPx = landingDepth * scale, landingWidthPx = landingWidth * scale;
     return <svg viewBox={`0 0 ${w} ${h}`} className="diagram">
       <rect x={x} y={y + runBPx} width={runAPx} height={widthPx} fill="#eef2f7" stroke="#111" />
       {Array.from({ length: stepsA }).map((_, i) => <line key={`a-${i}`} x1={x + i * stair.treadDepth * scale} y1={y + runBPx} x2={x + i * stair.treadDepth * scale} y2={y + runBPx + widthPx} stroke="#94a3b8" />)}
-      <rect x={x + runAPx} y={y + runBPx} width={landingPx} height={landingPx} fill="#e2e8f0" stroke="#111" />
+      <rect x={x + runAPx} y={y + runBPx} width={landingDepthPx} height={landingWidthPx} fill="#e2e8f0" stroke="#111" />
       <rect x={x + runAPx} y={y} width={widthPx} height={runBPx} fill="#eef2f7" stroke="#111" />
       {Array.from({ length: stepsB }).map((_, i) => <line key={`b-${i}`} x1={x + runAPx} y1={y + i * stair.treadDepth * scale} x2={x + runAPx + widthPx} y2={y + i * stair.treadDepth * scale} stroke="#94a3b8" />)}
       {drawModulesOnRun(x, y + runBPx, runAPx, widthPx, true)}
@@ -529,12 +553,14 @@ function StairTopViewDiagram({ stair, platforms, showPlatforms }) {
     </svg>;
   }
 
-  const stepsRun = Math.floor((stair.numberOfSteps - (stair.uTurnStyle === 'winder' ? stair.winderSteps : 0)) / 2);
   const winderSteps = stair.uTurnStyle === 'winder' ? clamp(stair.winderSteps, 3, 6) : 0;
+  const rawStepsRun = Math.floor((stair.numberOfSteps - winderSteps) / 2);
+  const stepsRun = Math.max(0, rawStepsRun);
   const run = stepsRun * stair.treadDepth;
-  const landing = Math.max(stair.landingDepth, stair.stairWidth);
-  const shapeW = run + landing + stair.stairWidth;
-  const shapeH = run + landing + stair.stairWidth;
+  const landingDepth = Math.max(stair.landingDepth, 0);
+  const landingWidth = Math.max(stair.landingWidth || stair.stairWidth, stair.stairWidth);
+  const shapeW = run + landingDepth + stair.stairWidth;
+  const shapeH = run + landingWidth + stair.stairWidth;
   const scale = Math.min((w - pad * 2) / shapeW, (h - pad * 2) / shapeH);
   const widthPx = stair.stairWidth * scale;
   const runPx = run * scale;
@@ -548,7 +574,7 @@ function StairTopViewDiagram({ stair, platforms, showPlatforms }) {
     <rect x={startX} y={startY} width={runPx} height={widthPx} fill="#eef2f7" stroke="#111" />
     {Array.from({ length: stepsRun }).map((_, i) => <line key={`u-a-${i}`} x1={startX + i * stair.treadDepth * scale} y1={startY} x2={startX + i * stair.treadDepth * scale} y2={startY + widthPx} stroke="#94a3b8" />)}
     {stair.uTurnStyle === 'landing' ? (
-      <rect x={startX + runPx} y={startY - landing * scale + widthPx} width={landing * scale} height={landing * scale} fill="#e2e8f0" stroke="#111" />
+      <rect x={startX + runPx} y={startY - landingWidth * scale + widthPx} width={landingDepth * scale} height={landingWidth * scale} fill="#e2e8f0" stroke="#111" />
     ) : (
       <g>
         {Array.from({ length: winderSteps }).map((_, i) => {
@@ -564,8 +590,8 @@ function StairTopViewDiagram({ stair, platforms, showPlatforms }) {
         })}
       </g>
     )}
-    <rect x={startX + runPx + landing * scale} y={startY - runPx} width={widthPx} height={runPx} fill="#eef2f7" stroke="#111" />
-    {Array.from({ length: stepsRun }).map((_, i) => <line key={`u-b-${i}`} x1={startX + runPx + landing * scale} y1={startY - i * stair.treadDepth * scale} x2={startX + runPx + landing * scale + widthPx} y2={startY - i * stair.treadDepth * scale} stroke="#94a3b8" />)}
+    <rect x={startX + runPx + landingDepth * scale} y={startY - runPx} width={widthPx} height={runPx} fill="#eef2f7" stroke="#111" />
+    {Array.from({ length: stepsRun }).map((_, i) => <line key={`u-b-${i}`} x1={startX + runPx + landingDepth * scale} y1={startY - i * stair.treadDepth * scale} x2={startX + runPx + landingDepth * scale + widthPx} y2={startY - i * stair.treadDepth * scale} stroke="#94a3b8" />)}
     {drawModulesOnRun(startX, startY, runPx, widthPx, true)}
     <text x={w / 2} y={h - 8} textAnchor="middle" className="svgSmall">Top view ({stair.uTurnStyle === 'winder' ? 'winder turn' : 'square landing turn'})</text>
   </svg>;
@@ -643,7 +669,7 @@ function App() {
         </div>
       </header>
 
-      <WarningList warnings={warnings.slice(0, 4)} />
+      <WarningList warnings={warnings} />
 
       <div className="layout">
         <main>
