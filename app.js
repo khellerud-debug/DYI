@@ -679,7 +679,7 @@ function App() {
   return (
     <div className="app">
       <header className="hero">
-        <h1>Modular Stair Work Platform Configurator</h1>
+        <h1>Modular Stair Work Platform Configurator version: 1.5</h1>
         <p>Workshop-focused planning tool for modular platforms, legs, pockets, BOM and cut list.</p>
         <div className="stats">
           <div><b>{sum(effectivePlatforms, (m) => m.quantity)}</b><span>Modules</span></div>
