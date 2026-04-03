@@ -188,6 +188,12 @@ function getEffectiveStairWidth(stair) {
   return Math.max(350, baseWidth - handrailLoss - stair.obstructionDepth);
 }
 
+function getStairLayoutPreset(stair) {
+  if (stair.stairType === 'straight') return 'straight';
+  if (stair.stairType === 'l-shaped') return stair.turnStyle === 'landing' ? 'l-landing' : 'l-winder';
+  return stair.turnStyle === 'landing' ? 'u-landing' : 'u-winder';
+}
+
 function suggestPlatformSize(stair) {
   const effectiveStairWidth = getEffectiveStairWidth(stair);
   const maxWidth = clamp(effectiveStairWidth - 60, 350, 900);
@@ -578,10 +584,14 @@ function StairTopViewDiagram({ stair, platforms, showPlatforms }) {
   const stepsRun = Math.max(0, rawStepsRun);
   const run = stepsRun * stair.treadDepth;
   const landingDepth = stair.turnStyle === 'landing' ? Math.max(stair.landingDepth, 0) : 0;
-  const landingWidth = Math.max(stair.landingWidth || stair.stairWidth, stair.stairWidth);
+  const landingWidth = stair.turnStyle === 'landing'
+    ? Math.max(stair.landingWidth || stair.stairWidth, stair.stairWidth)
+    : stair.stairWidth;
+  const winderGap = stair.turnStyle === 'winder' ? clamp(stair.stairWidth * 0.18, 80, 180) : 0;
   const shapeW = run + landingDepth + stair.stairWidth;
   const shapeH = run + stair.stairWidth;
   const scale = Math.min((w - pad * 2) / shapeW, (h - pad * 2) / shapeH);
+  const winderGapPx = winderGap * scale;
   const widthPx = stair.stairWidth * scale;
   const runPx = run * scale;
   const landingDepthPx = landingDepth * scale;
@@ -598,16 +608,31 @@ function StairTopViewDiagram({ stair, platforms, showPlatforms }) {
     ) : (
       <g>
         {Array.from({ length: winderSteps }).map((_, i) => {
-          const a0 = Math.PI + (i * Math.PI) / winderSteps;
-          const a1 = Math.PI + ((i + 1) * Math.PI) / winderSteps;
-          const rIn = (stair.winderInnerTread / Math.PI) * winderSteps * scale;
-          const rOut = rIn + widthPx;
-          const p1 = `${cx + Math.cos(a0) * rIn},${cy + Math.sin(a0) * rIn}`;
-          const p2 = `${cx + Math.cos(a1) * rIn},${cy + Math.sin(a1) * rIn}`;
-          const p3 = `${cx + Math.cos(a1) * rOut},${cy + Math.sin(a1) * rOut}`;
-          const p4 = `${cx + Math.cos(a0) * rOut},${cy + Math.sin(a0) * rOut}`;
-          return <polygon key={`w-${i}`} points={`${p1} ${p2} ${p3} ${p4}`} fill={i % 2 ? '#e2e8f0' : '#eef2f7'} stroke="#111" />;
+          const a0 = (i * (Math.PI / 2)) / winderSteps;
+          const a1 = ((i + 1) * (Math.PI / 2)) / winderSteps;
+          const rIn = Math.max(6, (stair.winderInnerTread / (Math.PI / 2)) * winderSteps * scale * 0.32);
+          const rOut = Math.max(rIn + 20, widthPx / 2 - winderGapPx / 2);
+
+          const leftCx = cx - winderGapPx / 2;
+          const rightCx = cx + winderGapPx / 2;
+          const topCy = cy;
+
+          const lp1 = `${leftCx + Math.cos(Math.PI - a0) * rIn},${topCy + Math.sin(Math.PI - a0) * rIn}`;
+          const lp2 = `${leftCx + Math.cos(Math.PI - a1) * rIn},${topCy + Math.sin(Math.PI - a1) * rIn}`;
+          const lp3 = `${leftCx + Math.cos(Math.PI - a1) * rOut},${topCy + Math.sin(Math.PI - a1) * rOut}`;
+          const lp4 = `${leftCx + Math.cos(Math.PI - a0) * rOut},${topCy + Math.sin(Math.PI - a0) * rOut}`;
+
+          const rp1 = `${rightCx + Math.cos(a0) * rIn},${topCy + Math.sin(a0) * rIn}`;
+          const rp2 = `${rightCx + Math.cos(a1) * rIn},${topCy + Math.sin(a1) * rIn}`;
+          const rp3 = `${rightCx + Math.cos(a1) * rOut},${topCy + Math.sin(a1) * rOut}`;
+          const rp4 = `${rightCx + Math.cos(a0) * rOut},${topCy + Math.sin(a0) * rOut}`;
+
+          return <g key={`w-${i}`}>
+            <polygon points={`${lp1} ${lp2} ${lp3} ${lp4}`} fill={i % 2 ? '#e2e8f0' : '#eef2f7'} stroke="#111" />
+            <polygon points={`${rp1} ${rp2} ${rp3} ${rp4}`} fill={i % 2 ? '#e2e8f0' : '#eef2f7'} stroke="#111" />
+          </g>;
         })}
+        <rect x={cx - winderGapPx / 2} y={cy - widthPx / 2} width={winderGapPx} height={widthPx} fill="#f8fafc" stroke="#94a3b8" strokeDasharray="3 3" />
       </g>
     )}
     <rect x={startX + runPx + landingDepthPx} y={startY} width={widthPx} height={runPx} fill="#eef2f7" stroke="#111" />
@@ -658,6 +683,25 @@ function App() {
   const totalWeight = sum(computedPlatforms, (p) => p.estimatedTotalWeightKg * p.module.quantity);
 
   const updateStair = (key, value) => setProject((p) => ({ ...p, staircase: { ...p.staircase, [key]: value } }));
+  const updateStairPreset = (preset) => {
+    if (preset === 'straight') {
+      setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'straight', turnStyle: 'landing' } }));
+      return;
+    }
+    if (preset === 'l-winder') {
+      setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'l-shaped', turnStyle: 'winder' } }));
+      return;
+    }
+    if (preset === 'l-landing') {
+      setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'l-shaped', turnStyle: 'landing' } }));
+      return;
+    }
+    if (preset === 'u-winder') {
+      setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'u-shaped', turnStyle: 'winder' } }));
+      return;
+    }
+    setProject((p) => ({ ...p, staircase: { ...p.staircase, stairType: 'u-shaped', turnStyle: 'landing' } }));
+  };
   const updateRepeatedTemplate = (key, value) => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, repeatedTemplate: { ...p.platformConfig.repeatedTemplate, [key]: value } } }));
   const updateMixedModule = (id, key, value) => setProject((p) => ({ ...p, platformConfig: { ...p.platformConfig, modules: p.platformConfig.modules.map((m) => m.id === id ? { ...m, [key]: value } : m) } }));
   const updateHardware = (key, value) => setProject((p) => ({ ...p, hardware: { ...p.hardware, [key]: value } }));
@@ -679,7 +723,7 @@ function App() {
   return (
     <div className="app">
       <header className="hero">
-        <h1>Modular Stair Work Platform Configurator version: 1.5</h1>
+        <h1>Modular Stair Work Platform Configurator · PR version #6</h1>
         <p>Workshop-focused planning tool for modular platforms, legs, pockets, BOM and cut list.</p>
         <div className="stats">
           <div><b>{sum(effectivePlatforms, (m) => m.quantity)}</b><span>Modules</span></div>
@@ -701,6 +745,18 @@ function App() {
               <NumberInput label="Stair width" value={project.staircase.stairWidth} onChange={(v) => updateStair('stairWidth', v)} suffix="mm" min={300} />
               <NumberInput label="Stairwell width" value={project.staircase.stairwellWidth} onChange={(v) => updateStair('stairwellWidth', v)} suffix="mm" min={500} />
               <NumberInput label="Number of steps" value={project.staircase.numberOfSteps} onChange={(v) => updateStair('numberOfSteps', v)} min={1} />
+              <SelectInput
+                label="Typical stair layout"
+                value={getStairLayoutPreset(project.staircase)}
+                onChange={updateStairPreset}
+                options={[
+                  { value: 'straight', label: 'Straight' },
+                  { value: 'l-winder', label: 'L-shape, no landing' },
+                  { value: 'l-landing', label: 'L-shape, with landing' },
+                  { value: 'u-winder', label: 'U-shape, no landing' },
+                  { value: 'u-landing', label: 'U-shape, with landing' },
+                ]}
+              />
               <SelectInput label="Stair type" value={project.staircase.stairType} onChange={(v) => updateStair('stairType', v)} options={[{ value: 'straight', label: 'Straight' }, { value: 'u-shaped', label: 'U-shaped' }, { value: 'l-shaped', label: 'L-shaped' }]} />
               {project.staircase.stairType !== 'straight' && <SelectInput label="Turn transition" value={project.staircase.turnStyle} onChange={(v) => updateStair('turnStyle', v)} options={[{ value: 'landing', label: 'With landing' }, { value: 'winder', label: 'No landing (angled steps)' }]} />}
               {project.staircase.stairType !== 'straight' && project.staircase.turnStyle === 'winder' && <NumberInput label="Winder steps in turn" value={project.staircase.winderSteps} onChange={(v) => updateStair('winderSteps', v)} min={3} max={6} />}
